@@ -24,6 +24,7 @@ already signed in with.
 | `case-shop.js` | A "Cases" sidebar entry and a price sort in the case shop |
 | `crate-received.js` | Replaces the "Case unlocked!" modal with a corner toast |
 | `tradeup-sort.js` | A price sort on the Trade-Up page |
+| `upgrader-ring.js` | The Upgrader's winning range on a full, draggable circle laid out like the reveal dial (0 at the top, clockwise) |
 | `ready-check.js` | A less obstructive match ready check, showing who hasn't accepted yet |
 | `auto-accept.js` | Optional auto-accept of the match-found dialog (off by default) |
 | `overwatch-info.js` | Match details above the clip on the Overwatch review page |

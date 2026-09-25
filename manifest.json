@@ -34,7 +34,8 @@
         "bulk-menu.js",
         "case-shop.js",
         "ready-check.js",
-        "crate-received.js"
+        "crate-received.js",
+        "upgrader-ring.js"
       ],
       "run_at": "document_idle",
       "world": "MAIN"
