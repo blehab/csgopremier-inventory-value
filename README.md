@@ -27,6 +27,7 @@ already signed in with.
 | `upgrader-ring.js` | The Upgrader's winning range on a full, draggable circle laid out like the reveal dial (0 at the top, clockwise) |
 | `ready-check.js` | A less obstructive match ready check, showing who hasn't accepted yet |
 | `auto-accept.js` | Optional auto-accept of the match-found dialog (off by default) |
+| `invite-accept.js` | Optional auto-accept of party (lobby) invites, switched in the site's Settings panel (off by default) |
 | `overwatch-info.js` | Match details above the clip on the Overwatch review page |
 | `overwatch-resume.js` | Keeps Overwatch watch progress across the page's focus-triggered reloads |
 
