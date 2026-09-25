@@ -1,0 +1,3 @@
+# The updater must keep CRLF wherever it is checked out, including on the Linux runner
+# that uploads it as a release asset: cmd.exe can misparse a LF-only batch file.
+*.bat text eol=crlf

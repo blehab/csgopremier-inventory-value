@@ -1,0 +1,90 @@
+name: Release
+
+# Tagging a commit v<x.y.z> packs the extension into a zip and publishes it as a release
+# asset. update.bat fetches that asset through the /releases/latest/download/ URL, which is
+# why the zip's filename deliberately carries no version.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build, e.g. v1.43.1'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Check the tag matches the manifest version
+        id: v
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          manifest_version=$(node -e 'console.log(require("./manifest.json").version)')
+          if [ "$version" != "$manifest_version" ]; then
+            echo "::error::Tag $tag implies version $version but manifest.json says $manifest_version."
+            echo 'Bump "version" in manifest.json, commit, then tag, so the installed version matches its tag.'
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Pack the extension
+        run: |
+          set -euo pipefail
+          mkdir -p dist/pkg
+          # What a user needs in their unpacked-extension folder. update.bat is deliberately
+          # excluded and published as its own asset instead, so an update can never overwrite
+          # the script that is doing the updating.
+          cp manifest.json README.md dist/pkg/
+          cp ./*.js dist/pkg/
+          # Zip from inside the staging dir so entries sit at the archive root and extract
+          # straight into the extension folder rather than into a nested one.
+          (cd dist/pkg && zip -q -r ../csgopremier-inventory-value.zip .)
+          unzip -l dist/csgopremier-inventory-value.zip
+
+      - name: Check the archive layout
+        run: |
+          set -euo pipefail
+          unzip -Z1 dist/csgopremier-inventory-value.zip | sort > entries.txt
+          if ! grep -qx 'manifest.json' entries.txt; then
+            echo '::error::manifest.json is not at the root of the archive; update.bat would extract an unusable folder.'
+            exit 1
+          fi
+          if grep -q '/' entries.txt; then
+            echo '::error::Archive contains a nested directory, so extracting would not land on the extension folder.'
+            exit 1
+          fi
+          # Every script the manifest declares must be in the archive, or the extension
+          # silently loses a feature after an update.
+          node -e 'for (const s of require("./manifest.json").content_scripts) for (const f of s.js) console.log(f)' > declared.txt
+          while read -r f; do
+            if ! grep -qx "$f" entries.txt; then
+              echo "::error::Declared in manifest.json but missing from the zip: $f"
+              exit 1
+            fi
+          done < declared.txt
+          echo "$(wc -l < declared.txt) content scripts packed, all declared ones present."
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${{ steps.v.outputs.tag }}" >/dev/null 2>&1; then
+            gh release upload "${{ steps.v.outputs.tag }}" \
+              dist/csgopremier-inventory-value.zip update.bat --clobber
+          else
+            gh release create "${{ steps.v.outputs.tag }}" \
+              dist/csgopremier-inventory-value.zip update.bat \
+              --title "${{ steps.v.outputs.tag }}" --generate-notes
+          fi
