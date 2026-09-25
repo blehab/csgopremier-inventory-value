@@ -4,7 +4,7 @@
 // stored as "<match id>_<steam id>.mp4", so both ids can be read straight off the video's URL once it
 // loads. Everything else comes from /api/match/<match id>, the endpoint the site's match pages use:
 // both teams with their names, scores, ratings and per-player stats. The suspect's row is marked. Each
-// player reads "username (steam64)": the username opens that player's profile (/<username>) in a new tab,
+// player reads "flag avatar username (steam64)" (flags from country-flags.js): the username opens that player's profile (/<username>) in a new tab,
 // and the id opens steamcommunity.com and steamcommunity.now for that id.
 //
 // Nothing is requested before a clip is actually loaded, and each match is only fetched once.
@@ -165,6 +165,7 @@
       <tr class="border-t border-white/[0.04] ${isSuspect ? "bg-primary/[0.07]" : ""} ${p.didNotJoin ? "opacity-40" : ""}">
         <td class="px-2.5 py-1">
           <div class="flex min-w-0 items-center gap-1.5">
+            ${window.__cipCountry ? window.__cipCountry.slotHtml(p.username) : ""}
             ${p.avatarUrl ? `<img src="${escapeHtml(p.avatarUrl)}" alt="" class="h-4 w-4 shrink-0 object-cover">` : ""}
             <a href="${profileLink(p.username)}" target="_blank" rel="noopener noreferrer" title="Open ${escapeHtml(p.username)}'s profile"
                class="truncate ${isSuspect ? "font-bold text-primary" : "text-white/75 hover:text-white"} hover:underline">${escapeHtml(p.username)}</a>
@@ -219,6 +220,7 @@
         </div>`;
     }
     card.innerHTML = headerHtml(ids, data, suspect) + body;
+    window.__cipCountry?.fillFlags(card); // country-flags.js
     applyOpen(card);
   }
 

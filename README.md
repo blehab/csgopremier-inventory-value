@@ -6,7 +6,8 @@ the source and what ships.
 
 It declares no permissions and no host permissions, uses no `chrome.*` APIs, and makes no
 cross-origin requests: every fetch is same-origin to `csgopremier.com`, using the session you are
-already signed in with.
+already signed in with. The one exception is the country flag images, which are plain `<img>` tags
+loaded from `flagcdn.com` (Windows doesn't render flag emoji).
 
 ## Features
 
@@ -28,6 +29,8 @@ already signed in with.
 | `ready-check.js` | A less obstructive match ready check, showing who hasn't accepted yet |
 | `auto-accept.js` | Optional auto-accept of the match-found dialog (off by default) |
 | `invite-accept.js` | Optional auto-accept of party (lobby) invites, switched in the site's Settings panel (off by default) |
+| `match-table.js` | A compact scoreboard on match pages: both teams side by side, laid out like the Overwatch card, with heatmap-shaded stats (the site's full table is one click away) |
+| `country-flags.js` | Country flag images next to players in the match scoreboard and the Overwatch card |
 | `overwatch-info.js` | Match details above the clip on the Overwatch review page |
 | `overwatch-resume.js` | Keeps Overwatch watch progress across the page's focus-triggered reloads |
 

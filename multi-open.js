@@ -791,10 +791,14 @@
     if (!reels) {
       reels = document.createElement("div");
       reels.id = REELS_ID;
-      // Right below the quantity row, i.e. where you just clicked. Putting it at the top of the column
-      // pushed the whole card down and the page appeared to jump.
+      // Right below the case card, i.e. just under where you clicked. Putting it at the top of the column
+      // pushed the whole card down and the page appeared to jump. Not inside the card: that's the site's
+      // opening component (it holds our row too), and it's hidden once the cases are opened, which would
+      // take the results down with it.
       const row = document.getElementById(ROW_ID);
-      if (row) row.insertAdjacentElement("afterend", reels);
+      const card = row?.closest(".space-y-3 > *");
+      if (card) card.insertAdjacentElement("afterend", reels);
+      else if (row) row.insertAdjacentElement("afterend", reels);
       else host.prepend(reels);
     }
     const preparing = `

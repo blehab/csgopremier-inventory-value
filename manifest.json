@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CSGOPremier Inventory Value",
-  "version": "1.45.0",
-  "description": "Adds a \"Get my inventory value\" button to the CSGOPremier inventory page, shows the price change on \"Sell to Market\", adds \"Price\" and \"Float\" sort options, a \"Sellable\" tab, match and lobby-invite auto-accept, opening several cases at once, float/pattern badges (inventory and market), float/price filters and market pattern and rare-item filters, a price sort on the Trade-Up page, and match details above the clip on the Overwatch review page.",
+  "version": "1.46.2",
+  "description": "Adds a \"Get my inventory value\" button to the CSGOPremier inventory page, shows the price change on \"Sell to Market\", adds \"Price\" and \"Float\" sort options, a \"Sellable\" tab, match and lobby-invite auto-accept, opening several cases at once, float/pattern badges (inventory and market), float/price filters and market pattern and rare-item filters, a price sort on the Trade-Up page, match details above the clip on the Overwatch review page, and a compact match scoreboard with country flags.",
   "content_scripts": [
     {
       "matches": [
@@ -30,13 +30,15 @@
         "market-filters.js",
         "multi-open.js",
         "tradeup-sort.js",
+        "country-flags.js",
         "overwatch-info.js",
         "overwatch-resume.js",
         "bulk-menu.js",
         "case-shop.js",
         "ready-check.js",
         "crate-received.js",
-        "upgrader-ring.js"
+        "upgrader-ring.js",
+        "match-table.js"
       ],
       "run_at": "document_idle",
       "world": "MAIN"

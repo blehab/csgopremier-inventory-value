@@ -115,7 +115,8 @@
     injectStyle();
     const imageBox = card.firstElementChild;
     const row = document.createElement("div");
-    row.className = `${CARD_ROW_CLASS} pointer-events-auto absolute z-10 flex max-w-[70%] flex-wrap gap-1 ${position}`;
+    row.className = `${CARD_ROW_CLASS} pointer-events-auto absolute z-10 flex flex-wrap gap-1 ${position}`;
+    row.style.maxWidth = "70%"; // inline: the site's stylesheet has no max-w-[70%]
     row.innerHTML = B().badgeHtml(badges.map((b) => (OWN_STYLE.has(b.kind) ? b : { ...b, color: B().COLORS.gold })));
     imageBox.appendChild(row);
   }

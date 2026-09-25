@@ -65,9 +65,10 @@
     host.querySelector(`.${NOTICE_CLASS}`)?.remove();
     const chip = document.createElement("div");
     chip.className =
-      `${NOTICE_CLASS} pointer-events-none absolute left-1/2 top-4 z-[6] -translate-x-1/2 border border-secondary/30 ` +
+      `${NOTICE_CLASS} pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 border border-secondary/30 ` +
       `bg-[rgba(13,13,18,0.92)] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-secondary backdrop-blur-md ` +
       `transition-opacity duration-500`;
+    chip.style.zIndex = "6"; // inline: the site's stylesheet has no z-[6]
     chip.textContent = text;
     host.appendChild(chip);
     setTimeout(() => (chip.style.opacity = "0"), 2200);

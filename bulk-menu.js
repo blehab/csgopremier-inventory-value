@@ -145,7 +145,10 @@
     const menu = document.createElement("div");
     menu.id = MENU_ID;
     menu.className =
-      "fixed z-[200] min-w-[232px] border border-white/10 bg-[rgba(13,13,18,0.97)] py-1 shadow-[0_18px_50px_rgba(0,0,0,0.55)] backdrop-blur-md";
+      "fixed border border-white/10 bg-[rgba(13,13,18,0.97)] py-1 backdrop-blur-md";
+    // Inline, not Tailwind: arbitrary values like z-[200] only exist in the site's stylesheet while the site
+    // itself uses them, and without its z-index the menu opens underneath the page.
+    menu.style.cssText = "z-index:10050;min-width:232px;box-shadow:0 18px 50px rgba(0,0,0,0.55);";
     menu.innerHTML =
       `<p class="px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-widest text-secondary">${count} selected</p>` +
       `<div class="my-1 h-px bg-white/[0.07]"></div>` +
@@ -202,7 +205,10 @@
     if (!el) {
       el = document.createElement("div");
       el.id = DIALOG_ID;
-      el.className = "fixed inset-0 z-[300] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm";
+      el.className = "fixed inset-0 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm";
+      // Inline for the same reason as the menu's: the site no longer ships z-[300], which left this dialog
+      // with no z-index, behind the page. Above the site's own dialogs and its item reveal (10000).
+      el.style.zIndex = "10100";
       el.addEventListener("click", (e) => {
         if (e.target === el && !el.dataset.busy) closeDialog();
       });
@@ -210,7 +216,7 @@
     }
     el.dataset.busy = busy ? "1" : "";
     el.innerHTML =
-      `<div class="relative max-h-[86vh] w-full max-w-lg overflow-hidden border border-primary/25 bg-[rgba(13,13,18,0.98)] shadow-[0_24px_70px_rgba(0,0,0,0.6)]">
+      `<div class="relative w-full max-w-lg overflow-hidden border border-primary/25 bg-[rgba(13,13,18,0.98)]" style="max-height:86vh;box-shadow:0 24px 70px rgba(0,0,0,0.6)">
          <span class="pointer-events-none absolute left-0 top-0 z-20 h-4 w-4 border-l-2 border-t-2 border-primary/70"></span>
          <span class="pointer-events-none absolute bottom-0 right-0 z-20 h-4 w-4 border-b-2 border-r-2 border-primary/70"></span>
          ${body}
@@ -322,7 +328,7 @@
 
     const el = dialogShell(
       dialogHeader(`${accepted.length} ${accepted.length === 1 ? "offer" : "offers"}`) +
-        `<ul class="max-h-[46vh] overflow-y-auto">${rows}</ul>
+        `<ul class="overflow-y-auto" style="max-height:46vh">${rows}</ul>
          <div class="border-t border-white/[0.07] px-4 py-3">
            <div class="flex items-center justify-between text-sm">
              <span class="text-white/55">You receive</span>
