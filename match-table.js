@@ -5,10 +5,14 @@
 // (opens steamcommunity.com and steamcommunity.now), then rating, K / D / A, +/–, ADR, KAST and HS%. The
 // stat cells are shaded like a heatmap against the whole match, green above the average and red below.
 // Entry, clutch, multi-kill and utility numbers are in each row's tooltip, and "Full table" brings the
-// site's own table back (remembered). The Heatmaps and Replay tabs are left alone.
+// site's own table back (remembered). The Heatmaps and Replay tabs are left alone, but the tab strip's
+// stray scrollbars are hidden (see "tab strip" below).
 //
 // Data: /api/match/<id> (teams, ratings, avatars, Steam ids) and /api/match/<id>/analysis (the demo
 // stats the site's table shows), both fetched once per match; countries come from country-flags.js.
+//
+// Before and during a match, the site's lineup is swapped for the same table, refreshed every 15 s;
+// see "live lineup" below.
 (() => {
   const CARD_ID = "cip-match-table";
   const VIEW_KEY = "cip-match-table-view"; // "compact" (default) | "site"
@@ -59,7 +63,7 @@
   // The site's scoreboard: the block holding both team tables (and the legend under them).
   function findBoard() {
     for (const th of document.querySelectorAll("table thead th")) {
-      if (th.textContent.trim() !== "KAST") continue;
+      if (th.textContent.trim() !== "KAST" || th.closest('[id^="cip-"]')) continue; // not the live lineup card
       const board = th.closest(".space-y-4");
       if (board) return board;
     }
@@ -102,24 +106,26 @@
     };
   }
 
+  const STAT_W = 44; // every stat column the same width, so the cells (and their shading) line up evenly
+
   // key, header, tooltip, value, text, heat (1: higher is better, -1: lower is better, 0: not shaded)
   const COLUMNS = [
-    { key: "rating", label: "Rating", title: "Rating", w: 52, get: (r) => r.rating ?? null, fmt: num, heat: 0 },
-    { key: "kills", label: "K", title: "Kills", w: 26, get: (r) => r.s?.kills, heat: 1 },
-    { key: "deaths", label: "D", title: "Deaths", w: 26, get: (r) => r.s?.deaths, heat: -1 },
-    { key: "assists", label: "A", title: "Assists", w: 26, get: (r) => r.s?.assists, heat: 1 },
+    { key: "rating", label: "Rating", title: "Rating", w: 56, get: (r) => r.rating ?? null, fmt: num, heat: 0 },
+    { key: "kills", label: "K", title: "Kills", w: STAT_W, get: (r) => r.s?.kills, heat: 1 },
+    { key: "deaths", label: "D", title: "Deaths", w: STAT_W, get: (r) => r.s?.deaths, heat: -1 },
+    { key: "assists", label: "A", title: "Assists", w: STAT_W, get: (r) => r.s?.assists, heat: 1 },
     {
       key: "diff",
       label: "+/–",
       title: "Kills minus deaths",
-      w: 34,
+      w: STAT_W,
       get: (r) => (r.s?.kills != null && r.s?.deaths != null ? r.s.kills - r.s.deaths : null),
       fmt: (v) => (v > 0 ? `+${v}` : String(v)),
       heat: 1,
     },
-    { key: "adr", label: "ADR", title: "Average damage per round", w: 36, get: (r) => r.s?.adr, fmt: (v) => Math.round(v), heat: 1 },
-    { key: "kast", label: "KAST", title: "Rounds with a kill, assist, survival or trade", w: 42, get: (r) => r.s?.kast, fmt: (v) => `${Math.round(v)}%`, heat: 1 },
-    { key: "hs", label: "HS%", title: "Headshot kills", w: 40, get: (r) => r.s?.hs, fmt: (v) => `${Math.round(v)}%`, heat: 1 },
+    { key: "adr", label: "ADR", title: "Average damage per round", w: STAT_W, get: (r) => r.s?.adr, fmt: (v) => Math.round(v), heat: 1 },
+    { key: "kast", label: "KAST", title: "Rounds with a kill, assist, survival or trade", w: STAT_W, get: (r) => r.s?.kast, fmt: (v) => `${Math.round(v)}%`, heat: 1 },
+    { key: "hs", label: "HS%", title: "Headshot kills", w: STAT_W, get: (r) => r.s?.hs, fmt: (v) => `${Math.round(v)}%`, heat: 1 },
   ];
 
   // Where each value sits between the match's lowest and highest, as -1 (worst) … 1 (best).
@@ -142,19 +148,25 @@
     return `background:${t >= 0 ? `rgba(34,197,94,${a})` : `rgba(239,68,68,${a})`};`;
   }
 
+  // "Lifetime: K/D 1.21 · ADR 99 · 281 games", the tooltip on live rows (no demo details yet).
+  function lifetimeText(p) {
+    const l = p.lifetimeStats;
+    if (!l?.gamesTracked) return "";
+    return `Lifetime: K/D ${(l.kdRatio ?? 0).toFixed(2)} · ADR ${Math.round(l.adr ?? 0)} · ${num(l.gamesTracked)} games`;
+  }
+
   function rowHtml(r, scales, mvp) {
     const { p } = r;
-    const cells = COLUMNS.map((col, i) => {
+    const cells = COLUMNS.map((col) => {
       const v = col.get(r);
       const has = v != null && Number.isFinite(+v);
       const t = has && scales[col.key] && !p.didNotJoin ? scales[col.key](v) : null;
-      const pad = i === COLUMNS.length - 1 ? "px-2.5" : "px-1";
-      return `<td class="${pad} py-1 text-right font-mono tabular-nums ${has ? "text-white/75" : "text-white/25"}" style="${heatStyle(t)}">${
+      return `<td class="px-0.5 py-1 text-center font-mono tabular-nums ${has ? "text-white/75" : "text-white/25"}" style="${heatStyle(t)}">${
         has ? escapeHtml(col.fmt ? col.fmt(+v) : v) : "–"
       }</td>`;
     }).join("");
     return `
-      <tr class="border-t border-white/[0.04] ${p.didNotJoin ? "opacity-40" : ""}" title="${escapeHtml(r.s?.extra || "")}">
+      <tr class="border-t border-white/[0.04] ${p.didNotJoin ? "opacity-40" : ""}" title="${escapeHtml(r.s?.extra || lifetimeText(p))}">
         <td class="px-2.5 py-1">
           <div class="flex min-w-0 items-center gap-1.5">
             ${C() ? C().slotHtml(p.username) : ""}
@@ -214,12 +226,13 @@
           <thead>
             <tr class="text-[9px] uppercase tracking-wider text-white/30">
               <th class="px-2.5 py-1 text-left font-bold">Player</th>
-              ${COLUMNS.map((col, i) => {
+              ${COLUMNS.map((col) => {
                 const active = col.key === sort.key;
-                return `<th data-sort="${col.key}" title="${escapeHtml(col.title)} (click to sort)" style="width:${col.w + (i === COLUMNS.length - 1 ? 10 : 0)}px;cursor:pointer;user-select:none"
-                  class="${i === COLUMNS.length - 1 ? "px-2.5" : "px-1"} py-1 text-right font-bold ${active ? "text-primary" : "hover:text-white/60"}">${col.label}${
-                  active ? (sort.dir < 0 ? "▾" : "▴") : ""
-                }</th>`;
+                // The sort arrow hangs off the label's right edge, so the label itself stays centred over the numbers.
+                return `<th data-sort="${col.key}" title="${escapeHtml(col.title)} (click to sort)" style="width:${col.w}px;cursor:pointer;user-select:none"
+                  class="px-0.5 py-1 text-center font-bold ${active ? "text-primary" : "hover:text-white/60"}"><span class="relative">${col.label}${
+                  active ? `<span class="absolute left-full top-1/2 -translate-y-1/2 pl-px text-[7px] leading-none">${sort.dir < 0 ? "▾" : "▴"}</span>` : ""
+                }</span></th>`;
               }).join("")}
             </tr>
           </thead>
@@ -233,7 +246,15 @@
   const BUTTON =
     "border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/45 transition-colors hover:text-white";
 
-  function render(card, data) {
+  // The card for one match: the finished scoreboard (live: false) or the live lineup (live: true), drawn the
+  // same way. card.cip holds its data (null until loaded) and the site elements it hides.
+  function render(card) {
+    const { data, live } = card.cip;
+    if (!data) {
+      card.innerHTML = "";
+      return;
+    }
+    card.className = live && view === "compact" ? M.CARD_CLASS : "";
     if (view === "site") {
       card.innerHTML = `<div class="flex justify-end"><button type="button" class="cip-mt-view ${BUTTON}" title="Switch back to the compact scoreboard">Compact view</button></div>`;
       return;
@@ -245,11 +266,14 @@
     const a = toRows(match.teamA);
     const b = toRows(match.teamB);
     const scales = heatScales([...a, ...b]);
-    const mvp = [...a, ...b].filter((r) => r.s?.adr != null && !r.p.didNotJoin).sort((x, y) => y.s.adr - x.s.adr)[0];
+    const mvp = !live && [...a, ...b].filter((r) => r.s?.adr != null && !r.p.didNotJoin).sort((x, y) => y.s.adr - x.s.adr)[0];
     const mvpId = mvp ? String(mvp.p.steamId) : "";
     const done = String(match.status || "").toLowerCase() === "completed";
     const aScore = match.teamAScore ?? 0;
     const bScore = match.teamBScore ?? 0;
+    const note = live
+      ? "Live, refreshed every 15 s · shading compares each stat across the match: green above average, red below · KAST and the entry, clutch and utility details come with the demo once the match ends · hover a row for lifetime stats · click a header to sort."
+      : "Shading compares each stat across the match: green above average, red below · hover a row for entry, clutch, multi-kill and utility · click a header to sort.";
 
     card.innerHTML = `
       <div class="grid gap-2.5" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,540px),1fr))">
@@ -257,28 +281,41 @@
         ${teamHtml(b, "B", match.teamBName, bScore, done && bScore > aScore, scales, mvpId)}
       </div>
       <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
-        <p class="font-mono text-[10px] leading-relaxed text-white/30">
-          Shading compares each stat across the match: green above average, red below · hover a row for entry, clutch, multi-kill and utility · click a header to sort.
-        </p>
-        <button type="button" class="cip-mt-view ${BUTTON}" title="Show the site's own scoreboard">Full table</button>
+        <p class="font-mono text-[10px] leading-relaxed text-white/30">${note}</p>
+        <button type="button" class="cip-mt-view ${BUTTON}" title="Show the site's own ${live ? "lineup" : "scoreboard"}">Full table</button>
       </div>`;
     C()?.fillFlags(card);
   }
 
-  function makeCard() {
+  // Hides the site's own tables while the compact view is showing. Only once the data is in: until then
+  // (or if it fails) the site's table stays.
+  function applyView(card) {
+    const hide = view === "compact" && !!card.cip.data;
+    for (const el of card.cip.targets()) el.toggleAttribute("hidden", hide);
+  }
+
+  function show(card) {
+    render(card);
+    applyView(card);
+  }
+
+  const cards = new Set(); // the finished and live cards, re-drawn together when the view or sort changes
+
+  function makeCard(id, live) {
     const card = document.createElement("div");
-    card.id = CARD_ID;
+    card.id = live ? LINEUP_ID : CARD_ID;
+    card.cip = { id, live, targets: () => [], data: null, json: "", fetchedAt: 0 };
     card.addEventListener("click", (e) => {
-      const id = e.target.closest(`.${STEAM_ID_CLASS}`)?.dataset.steam;
-      if (id) {
-        window.open(mirrorLink(id), "_blank", "noopener"); // the anchor itself opens steamcommunity.com
+      const steam = e.target.closest(`.${STEAM_ID_CLASS}`)?.dataset.steam;
+      if (steam) {
+        window.open(mirrorLink(steam), "_blank", "noopener"); // the anchor itself opens steamcommunity.com
         return;
       }
       const th = e.target.closest("th[data-sort]");
       if (th) {
         const key = th.dataset.sort;
         sort = sort.key === key ? { key, dir: -sort.dir } : { key, dir: key === "deaths" ? 1 : -1 };
-        rerender(card);
+        cards.forEach(show);
         return;
       }
       if (e.target.closest(".cip-mt-view")) {
@@ -286,28 +323,17 @@
         try {
           localStorage.setItem(VIEW_KEY, view);
         } catch {}
-        rerender(card);
+        cards.forEach(show);
       }
     });
+    cards.add(card);
     return card;
   }
 
-  function rerender(card) {
-    const id = card.dataset.match;
-    if (!id) return;
-    load(id).then((data) => {
-      if (card.dataset.match !== id) return;
-      render(card, data);
-      applyView(card.parentElement, card);
-    }, () => {});
-  }
-
-  // Hides the site's team tables and legend while the compact view is showing. Only once the data is in:
-  // until then (or if it fails) the site's table stays.
-  function applyView(board, card) {
-    if (!board) return;
-    const hide = view === "compact" && card.dataset.ready === "1";
-    for (const child of board.children) if (child !== card) child.toggleAttribute("hidden", hide);
+  function drop(card) {
+    if (!card) return;
+    card.remove();
+    cards.delete(card);
   }
 
   let card = null;
@@ -315,28 +341,104 @@
   function update() {
     const m = location.pathname.match(MATCH_RE);
     const board = m && findBoard();
-    if (!board) {
-      card?.remove();
-      return;
+    if (!board || card?.cip.id !== m[1]) {
+      drop(card);
+      card = null;
     }
-    card ??= makeCard();
-    if (board.firstElementChild !== card) board.insertBefore(card, board.firstElementChild); // React remounts move it
-    const id = m[1];
-    if (card.dataset.match !== id) {
-      card.dataset.match = id;
-      card.dataset.ready = "";
-      card.innerHTML = "";
-      load(id).then(
+    if (!board) return;
+    if (!card) {
+      const c = (card = makeCard(m[1], false));
+      load(c.cip.id).then(
         (data) => {
-          if (card.dataset.match !== id) return;
-          card.dataset.ready = "1";
-          render(card, data);
-          applyView(card.parentElement, card);
+          c.cip.data = data;
+          show(c);
         },
         () => {} // the site's own table stays
       );
     }
-    applyView(board, card);
+    if (board.firstElementChild !== card) board.insertBefore(card, board.firstElementChild); // React remounts move it
+    const c = card;
+    c.cip.targets = () => [...board.children].filter((el) => el !== c);
+    applyView(c);
+  }
+
+  // ---------- live lineup ----------
+  // Before a match finishes, the site shows a lineup instead of the scoreboard: rating, lifetime K/D and ADR
+  // until the server goes live, then K / D / A / ADR from the match. It's swapped for the same compact
+  // table as the finished scoreboard, in a panel like the page's own cards: K / D / A, +/–, ADR and HS%
+  // from the live match stats (KAST and the row details need the demo, so they come once it's parsed),
+  // blank before the server goes live, with each player's lifetime stats in the row tooltip.
+  // Re-fetched every 15 s so the score and stats keep up.
+
+  const LINEUP_ID = "cip-match-lineup";
+  const LINEUP_REFRESH = 15 * 1000;
+  const M = window.__cipMatchCard; // match-card.js, for the panel style
+
+  // The site's lineup: the grid holding both teams' tables (the finished scoreboard has KAST, this doesn't).
+  function findLineup() {
+    for (const th of document.querySelectorAll("table thead th")) {
+      if (th.textContent.trim() !== "ADR" || th.closest('[id^="cip-"]')) continue; // not the extension's own cards
+      const grid = th.closest("div.grid");
+      if (grid && ![...grid.querySelectorAll("th")].some((h) => h.textContent.trim() === "KAST")) return grid;
+    }
+    return null;
+  }
+
+  let lineup = null;
+
+  function fetchLineup(c) {
+    c.cip.fetchedAt = Date.now();
+    getJson(`/api/match/${c.cip.id}`).then(
+      (match) => {
+        if (lineup !== c) return;
+        const json = JSON.stringify(match);
+        if (json === c.cip.json) return; // unchanged: keep the flags already filled in
+        c.cip.json = json;
+        c.cip.data = { match, analysis: null };
+        show(c);
+      },
+      () => {} // the site's own lineup stays
+    );
+  }
+
+  function updateLineup() {
+    const m = location.pathname.match(MATCH_RE);
+    const grid = m && findLineup();
+    if (!grid || lineup?.cip.id !== m[1]) {
+      drop(lineup);
+      lineup = null;
+    }
+    if (!grid) return;
+    lineup ??= makeCard(m[1], true);
+    lineup.cip.targets = () => [grid];
+    if (grid.previousElementSibling !== lineup) grid.parentElement.insertBefore(lineup, grid); // React remounts move it
+    applyView(lineup);
+    if (Date.now() - lineup.cip.fetchedAt > LINEUP_REFRESH) fetchLineup(lineup);
+  }
+
+  setInterval(() => lineup && updateLineup(), LINEUP_REFRESH);
+
+  // ---------- tab strip ----------
+  // The site's Scoreboard / Heatmaps / Replay strip is an overflow-x-auto tablist whose content is a pixel
+  // taller than the strip, so Chrome draws both scrollbars (arrows and all) under and beside the tabs even
+  // though nothing needs scrolling. It's marked with an attribute (React leaves unknown attributes alone)
+  // and its scrollbars hidden; it can still be scrolled sideways by wheel or touch on a narrow screen.
+
+  const TABS_ATTR = "data-cip-match-tabs";
+
+  function fixTabs() {
+    if (!MATCH_RE.test(location.pathname)) return;
+    if (!document.getElementById("cip-match-tabs-style")) {
+      const style = document.createElement("style");
+      style.id = "cip-match-tabs-style";
+      style.textContent = `
+        [${TABS_ATTR}] { overflow-y: hidden !important; scrollbar-width: none; }
+        [${TABS_ATTR}]::-webkit-scrollbar { display: none; }`;
+      document.head.appendChild(style);
+    }
+    for (const list of document.querySelectorAll('[role="tablist"]:not([' + TABS_ATTR + "])")) {
+      if ([...list.querySelectorAll('[role="tab"]')].some((t) => t.textContent.trim() === "Scoreboard")) list.setAttribute(TABS_ATTR, "");
+    }
   }
 
   let scheduled = false;
@@ -346,8 +448,12 @@
     setTimeout(() => {
       scheduled = false;
       update();
+      updateLineup();
+      fixTabs();
     }, 100);
   }).observe(document.documentElement, { childList: true, subtree: true });
 
   update();
+  updateLineup();
+  fixTabs();
 })();

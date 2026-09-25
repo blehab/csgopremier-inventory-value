@@ -29,7 +29,8 @@ loaded from `flagcdn.com` (Windows doesn't render flag emoji).
 | `ready-check.js` | A less obstructive match ready check, showing who hasn't accepted yet |
 | `auto-accept.js` | Optional auto-accept of the match-found dialog (off by default) |
 | `invite-accept.js` | Optional auto-accept of party (lobby) invites, switched in the site's Settings panel (off by default) |
-| `match-table.js` | A compact scoreboard on match pages: both teams side by side, laid out like the Overwatch card, with heatmap-shaded stats (the site's full table is one click away) |
+| `match-table.js` | A compact scoreboard on match pages: both teams side by side, laid out like the Overwatch card, with heatmap-shaded stats (the site's full table is one click away), and the same table for live matches, refreshed every 15 s |
+| `match-card.js` | The Overwatch card's look (header chips, team boxes, player rows), used by the Overwatch page (and for the live match table's panel) |
 | `country-flags.js` | Country flag images next to players in the match scoreboard and the Overwatch card |
 | `overwatch-info.js` | Match details above the clip on the Overwatch review page |
 | `overwatch-resume.js` | Keeps Overwatch watch progress across the page's focus-triggered reloads |
