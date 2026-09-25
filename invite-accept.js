@@ -5,9 +5,10 @@
 // with "Accept" and dismiss buttons. "Accept" posts partyApi.acceptInvite(partyId), toasts "Joined party!"
 // and hides the banner. We press that same button, so the site's own request, toasts and party refresh run
 // as if it had been clicked.
-// Invites that would pull you out of the party you're in (the banner then says "Accepting leaves your
-// current party") are left for you to decide. Each banner is pressed once: if the accept fails, the site
-// shows its error toast and the banner stays for a manual click.
+// Invites that would pull you out of a party with other players in it are left for you to decide (the
+// banner's "Accepting leaves your current party" also shows when you're alone in your own party, which is
+// accepted). Each banner is pressed once: if the accept fails, the site shows its error toast and the
+// banner stays for a manual click.
 //
 // The switch lives in the site's Settings panel (the gear icon in the left sidebar), as an Off/On card
 // styled like the site's own settings (remembered in localStorage, off by default).
@@ -46,17 +47,34 @@
     return null;
   }
 
-  const acceptable = (inv) =>
-    inv && !inv.btn.disabled && !pressed.has(inv.title) && !LEAVES_PARTY_RE.test(inv.rail.textContent);
+  const acceptable = (inv) => inv && !inv.btn.disabled && !pressed.has(inv.title);
+
+  // The site warns "Accepting leaves your current party" whenever you're in any party, and you always are:
+  // on your own you're the leader of a one-member party. Only hold back when that party has someone else in it.
+  async function wouldLeaveOthers() {
+    try {
+      const res = await fetch("/api/party", { credentials: "include" });
+      const members = (await res.json())?.party?.Members;
+      return Array.isArray(members) && members.length > 1;
+    } catch {
+      return true; // can't tell: leave it for a manual click
+    }
+  }
 
   function tryAccept() {
     if (!isEnabled() || pending || !acceptable(findInvite())) return;
 
     // setTimeout rather than requestAnimationFrame: invites often arrive while the tab is in the
     // background, where animation frames don't run (timers do, throttled to about once a second).
-    pending = setTimeout(() => {
+    pending = setTimeout(async () => {
+      let inv = findInvite();
+      if (isEnabled() && acceptable(inv) && LEAVES_PARTY_RE.test(inv.rail.textContent) && (await wouldLeaveOthers())) {
+        pressed.add(inv.title); // left for you; don't re-check this banner on every mutation
+        console.log(`[CSGOPremier Auto-accept] Not accepting party invite (would leave your party): ${inv.title.textContent.trim()}`);
+        inv = null;
+      }
       pending = null;
-      const inv = findInvite();
+      inv = inv && findInvite(); // re-read: the banner may have changed while we checked the party
       if (!isEnabled() || !acceptable(inv)) return;
       pressed.add(inv.title);
       console.log(`[CSGOPremier Auto-accept] Accepting party invite: ${inv.title.textContent.trim()}`);
@@ -87,7 +105,7 @@
     card.className = "relative bg-black/20 border border-white/10 p-3";
     card.innerHTML = `
       <div class="text-sm font-medium text-white/80 mb-1">Auto-accept Lobby Invites</div>
-      <p class="text-[10px] text-white/40 mb-2">Join a party as soon as someone invites you, on any page. Invites that would make you leave your current party are left for you.</p>
+      <p class="text-[10px] text-white/40 mb-2">Join a party as soon as someone invites you, on any page. Invites that would make you leave a party with other players in it are left for you.</p>
       <div class="flex gap-2">
         <button type="button" data-value="0">Off</button>
         <button type="button" data-value="1">On</button>
