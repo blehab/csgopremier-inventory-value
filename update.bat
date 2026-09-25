@@ -19,7 +19,6 @@ rem ---------------------------------------------------------------------------
 
 set "REPO=blehab/csgopremier-inventory-value"
 set "ASSET=csgopremier-inventory-value.zip"
-set "URL=https://github.com/%REPO%/releases/latest/download/%ASSET%"
 set "INSTALLDIR=%LOCALAPPDATA%\csgopremier-inventory-value"
 
 if "%~1"=="" (set "TARGET=%INSTALLDIR%") else (set "TARGET=%~f1")
@@ -46,8 +45,6 @@ if not exist "%TARGET%\" (
   goto :fail
 )
 
-call :readversion "%TARGET%\manifest.json" BEFORE
-
 set "WORK=%TEMP%\cip-update-%RANDOM%%RANDOM%"
 mkdir "%WORK%"
 if not exist "%WORK%\" (
@@ -55,7 +52,24 @@ if not exist "%WORK%\" (
   goto :fail
 )
 
-echo Downloading the latest release...
+call :readversion "%TARGET%\manifest.json" BEFORE
+
+rem Ask the API which tag is current and download that tag's asset by name. The
+rem /releases/latest/download/ shortcut is a single URL for every release, so a CDN can
+rem and does serve a previous release's zip from it.
+set "TAG="
+curl -fsL -H "Accept: application/vnd.github+json" -o "%WORK%\latest.json" "https://api.github.com/repos/%REPO%/releases/latest"
+if not errorlevel 1 call :readjson "%WORK%\latest.json" tag_name TAG
+
+if defined TAG (
+  echo Latest release: %TAG%
+  set "URL=https://github.com/%REPO%/releases/download/%TAG%/%ASSET%"
+) else (
+  echo Could not read the latest tag from the GitHub API; using the latest-download URL.
+  set "URL=https://github.com/%REPO%/releases/latest/download/%ASSET%?t=%RANDOM%%RANDOM%"
+)
+
+echo Downloading...
 curl -fL --retry 3 --retry-delay 2 --progress-bar -o "%WORK%\%ASSET%" "%URL%"
 if errorlevel 1 (
   echo ERROR: the download failed. Check your connection, or whether a release exists at
@@ -128,4 +142,17 @@ if defined v set "v=!v: =!"
 if defined v set v=!v:"=!
 if defined v set "v=!v:,=!"
 endlocal & set "%~2=%v%"
+goto :eof
+
+rem --- reads a top-level string field %2 out of the JSON file %1 into variable %3 ---
+:readjson
+setlocal enabledelayedexpansion
+set "v="
+if exist %1 (
+  for /f "tokens=2 delims=:" %%a in ('findstr /c:"\"%~2\"" %1') do if not defined v set "v=%%a"
+)
+if defined v set "v=!v: =!"
+if defined v set v=!v:"=!
+if defined v set "v=!v:,=!"
+endlocal & set "%~3=%v%"
 goto :eof
