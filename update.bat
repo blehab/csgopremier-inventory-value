@@ -2,25 +2,31 @@
 setlocal enabledelayedexpansion
 
 rem ---------------------------------------------------------------------------
-rem  CSGOPremier Inventory Value - updater
+rem  CSGOPremier Inventory Value - installer / updater
 rem
-rem  Downloads the latest release from GitHub and replaces the extension files
-rem  in place. Chrome will not notice by itself: when this finishes, open
+rem  Downloads the latest release from GitHub into
+rem      %LOCALAPPDATA%\csgopremier-inventory-value
+rem  creating that folder on first run and replacing the files in it after that.
+rem  Keep this script wherever you like - the install folder is fixed, so it
+rem  does not matter where you run it from.
+rem
+rem  Chrome will not notice by itself: when this finishes, open
 rem  chrome://extensions and press the reload arrow on the extension's card.
 rem
 rem  Usage:  update.bat [target folder]
-rem  With no argument it updates the folder this script sits in.
+rem  Pass a folder only if you want to install somewhere other than the default.
 rem ---------------------------------------------------------------------------
 
 set "REPO=blehab/csgopremier-inventory-value"
 set "ASSET=csgopremier-inventory-value.zip"
 set "URL=https://github.com/%REPO%/releases/latest/download/%ASSET%"
+set "INSTALLDIR=%LOCALAPPDATA%\csgopremier-inventory-value"
 
-if "%~1"=="" (set "TARGET=%~dp0") else (set "TARGET=%~f1")
+if "%~1"=="" (set "TARGET=%INSTALLDIR%") else (set "TARGET=%~f1")
 if "%TARGET:~-1%"=="\" set "TARGET=%TARGET:~0,-1%"
 
-echo CSGOPremier Inventory Value - updater
-echo Target folder: %TARGET%
+echo CSGOPremier Inventory Value - installer / updater
+echo Install folder: %TARGET%
 echo.
 
 where curl.exe >nul 2>&1
@@ -86,11 +92,19 @@ if "%BEFORE%"=="" (
 rd /s /q "%WORK%" 2>nul
 
 echo.
-echo Next: open chrome://extensions and press the reload arrow on the
-echo       "CSGOPremier Inventory Value" card.
-echo       Not loaded yet? Turn on Developer mode, choose "Load unpacked",
-echo       and pick this folder:
-echo         %TARGET%
+if "%BEFORE%"=="" (
+  echo Next: open chrome://extensions, turn on Developer mode, choose
+  echo       "Load unpacked" and pick this folder:
+  echo         %TARGET%
+  <nul set /p "=%TARGET%"|clip 2>nul
+  if not errorlevel 1 (
+    echo.
+    echo       ^(that path is now on your clipboard^)
+  )
+) else (
+  echo Next: open chrome://extensions and press the reload arrow on the
+  echo       "CSGOPremier Inventory Value" card.
+)
 echo.
 pause
 exit /b 0

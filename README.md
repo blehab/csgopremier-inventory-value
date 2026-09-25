@@ -34,36 +34,44 @@ Settings live in the page's own `localStorage` under the `cip-` prefix, so they 
 
 ## Install
 
-1. Download **`csgopremier-inventory-value.zip`** and **`update.bat`** from the
-   [latest release](https://github.com/blehab/csgopremier-inventory-value/releases/latest).
-2. Extract the zip into a folder you intend to keep, and put `update.bat` in that same folder.
-3. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick the
-   folder.
+1. Download **`update.bat`** from the
+   [latest release](https://github.com/blehab/csgopremier-inventory-value/releases/latest) — that
+   one file is enough, it fetches everything else.
+2. Run it. It downloads the extension into `%LOCALAPPDATA%\csgopremier-inventory-value`, creating
+   the folder, and copies that path to your clipboard.
+3. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and paste the
+   path.
+
+Keep `update.bat` anywhere you like — Downloads is fine. The install folder is fixed, so where you
+run the script from makes no difference.
 
 ## Update
 
-Double-click **`update.bat`**. It downloads the latest release, replaces the extension's files in
-place, and tells you the version it went from and to. Then open `chrome://extensions` and press the
-**reload arrow** on the extension's card — Chrome keeps running the old copy until you do.
+Run **`update.bat`** again. It replaces the files in the install folder and reports the version it
+went from and to. Then open `chrome://extensions` and press the **reload arrow** on the extension's
+card — Chrome keeps running the old copy until you do.
 
-`update.bat` updates the folder it sits in; pass a path as the first argument to update a folder
-somewhere else. It only overwrites files that are in the release, so anything else in the folder is
-left alone — including `update.bat` itself, which is why the script is published as its own release
-asset rather than being packed inside the zip.
+To install somewhere other than the default, pass a folder as the first argument:
+`update.bat D:\chrome\cip`. Either way the script only overwrites files that are in the release, so
+anything else in the folder is left alone.
 
 ## Release
 
-1. Bump `"version"` in `manifest.json` and commit it.
-2. Tag and push:
-   ```
-   git tag v1.43.1
-   git push origin main --tags
-   ```
+```powershell
+.\bump.ps1            # 1.43.0 -> 1.43.1
+.\bump.ps1 minor      # 1.43.0 -> 1.44.0
+.\bump.ps1 -Version 2.0.0
+```
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) then checks the tag matches the
-manifest version, packs `manifest.json` + the `.js` files + this README into
-`csgopremier-inventory-value.zip`, verifies every script the manifest declares is actually in the
-archive, and publishes the zip and `update.bat` as release assets. Follow it with `gh run watch`.
+`bump.ps1` rewrites `"version"` in `manifest.json`, commits it as `Release v<version>`, tags and
+pushes. It refuses to run while anything else is uncommitted, since that work would not be in the
+tagged release — commit it first, or pass `-IncludeChanges` to bundle it into the release commit.
+`-NoPush` stops after tagging locally.
 
-The zip's name has no version in it on purpose: that keeps
+Pushing the tag starts [`.github/workflows/release.yml`](.github/workflows/release.yml), which
+checks the tag matches the manifest version, packs `manifest.json` + the `.js` files + this README
+into `csgopremier-inventory-value.zip`, verifies every script the manifest declares is actually in
+the archive, and publishes the zip and `update.bat` as release assets. Follow it with `gh run watch`.
+
+The zip's name carries no version on purpose: it keeps
 `releases/latest/download/csgopremier-inventory-value.zip` a permanent URL for `update.bat` to pull.
