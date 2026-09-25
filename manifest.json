@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CSGOPremier Inventory Value",
-  "version": "1.44.0",
+  "version": "1.44.1",
   "description": "Adds a \"Get my inventory value\" button to the CSGOPremier inventory page, shows the price change on \"Sell to Market\", adds \"Price\" and \"Float\" sort options, a \"Sellable\" tab, match auto-accept, opening several cases at once, float/pattern badges (inventory and market), float/price filters and market pattern and rare-item filters, a price sort on the Trade-Up page, and match details above the clip on the Overwatch review page.",
   "content_scripts": [
     {
