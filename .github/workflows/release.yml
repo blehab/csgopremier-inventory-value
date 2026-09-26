@@ -1,10 +1,17 @@
 name: Release
 
-# Tagging a commit v<x.y.z> packs the extension into a zip and publishes it as a release
-# asset. update.bat fetches that asset through the /releases/latest/download/ URL, which is
-# why the zip's filename deliberately carries no version.
+# Packs the extension into a zip and publishes it as a release asset. update.bat fetches that
+# asset through the /releases/latest/download/ URL, which is why the zip's filename deliberately
+# carries no version.
+#
+# A push to main that changes manifest.json releases whatever "version" it now says: if there is
+# no v<version> release yet, the tag is created on the pushed commit and the release published.
+# If that version is already released, the run does nothing, so ordinary commits need no tag.
+# Pushing a v<x.y.z> tag by hand (bump.ps1) still works and must match the manifest.
 on:
   push:
+    branches: [main]
+    paths: [manifest.json]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -15,6 +22,11 @@ on:
 permissions:
   contents: write
 
+# A main push and a tag push for the same version (bump.ps1 does both) must not publish at once.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -23,22 +35,34 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Check the tag matches the manifest version
+      - name: Work out the version
         id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          version="${tag#v}"
           manifest_version=$(node -e 'console.log(require("./manifest.json").version)')
-          if [ "$version" != "$manifest_version" ]; then
-            echo "::error::Tag $tag implies version $version but manifest.json says $manifest_version."
-            echo 'Bump "version" in manifest.json, commit, then tag, so the installed version matches its tag.'
-            exit 1
+          if [ "${{ github.ref_type }}" = "branch" ] && [ -z "${{ github.event.inputs.tag }}" ]; then
+            # A push to main: release the manifest's version, unless it already is.
+            tag="v$manifest_version"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "::notice::$tag is already released. Bump the version in manifest.json to publish a new release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            tag="${{ github.event.inputs.tag || github.ref_name }}"
+            if [ "${tag#v}" != "$manifest_version" ]; then
+              echo "::error::Tag $tag implies version ${tag#v} but manifest.json says $manifest_version."
+              echo 'Bump "version" in manifest.json, commit, then tag, so the installed version matches its tag.'
+              exit 1
+            fi
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version=$manifest_version" >> "$GITHUB_OUTPUT"
 
       - name: Pack the extension
+        if: steps.v.outputs.skip != 'true'
         run: |
           set -euo pipefail
           mkdir -p dist/pkg
@@ -53,6 +77,7 @@ jobs:
           unzip -l dist/csgopremier-inventory-value.zip
 
       - name: Check the archive layout
+        if: steps.v.outputs.skip != 'true'
         run: |
           set -euo pipefail
           unzip -Z1 dist/csgopremier-inventory-value.zip | sort > entries.txt
@@ -76,6 +101,7 @@ jobs:
           echo "$(wc -l < declared.txt) content scripts packed, all declared ones present."
 
       - name: Publish the release
+        if: steps.v.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -84,7 +110,8 @@ jobs:
             gh release upload "${{ steps.v.outputs.tag }}" \
               dist/csgopremier-inventory-value.zip update.bat --clobber
           else
+            # --target creates the tag on the built commit when it doesn't exist yet (a main push).
             gh release create "${{ steps.v.outputs.tag }}" \
               dist/csgopremier-inventory-value.zip update.bat \
-              --title "${{ steps.v.outputs.tag }}" --generate-notes
+              --target "$(git rev-parse HEAD)" --title "${{ steps.v.outputs.tag }}" --generate-notes
           fi

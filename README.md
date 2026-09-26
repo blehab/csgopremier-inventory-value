@@ -23,6 +23,7 @@ loaded from `flagcdn.com` (Windows doesn't render flag emoji).
 | `multi-open.js` | Opening several copies of the same case at once, with the animation for each |
 | `bulk-menu.js` | Right-click actions across several selected inventory items |
 | `case-shop.js` | A "Cases" sidebar entry and a price sort in the case shop |
+| `case-cart.js` | A cart in the case shop: add cases and capsules from their tiles, then buy them all at once |
 | `crate-received.js` | Replaces the "Case unlocked!" modal with a corner toast |
 | `tradeup-sort.js` | A price sort on the Trade-Up page |
 | `upgrader-ring.js` | The Upgrader's winning range on a full, draggable circle laid out like the reveal dial (0 at the top, clockwise) |
@@ -33,6 +34,7 @@ loaded from `flagcdn.com` (Windows doesn't render flag emoji).
 | `match-card.js` | The Overwatch card's look (header chips, team boxes, player rows), used by the Overwatch page (and for the live match table's panel) |
 | `country-flags.js` | Country flag images next to players in the match scoreboard and the Overwatch card |
 | `overwatch-info.js` | Match details above the clip on the Overwatch review page |
+| `season-track.js` | Opens the Season Pass reward track centred on your current level instead of Level 1 |
 | `overwatch-resume.js` | Keeps Overwatch watch progress across the page's focus-triggered reloads |
 
 Settings live in the page's own `localStorage` under the `cip-` prefix, so they belong to the
@@ -63,6 +65,18 @@ anything else in the folder is left alone.
 
 ## Release
 
+Bump `"version"` in `manifest.json` in the same commit as the change, then push:
+
+```powershell
+git add .; git commit -m "..."; git push
+```
+
+A push to `main` that changes `manifest.json` releases that version: if there is no `v<version>`
+release yet, the workflow tags the pushed commit and publishes it. If the version is already released
+(no bump), nothing happens.
+
+`bump.ps1` does the bump, commit, tag and push for you instead:
+
 ```powershell
 .\bump.ps1            # 1.43.0 -> 1.43.1
 .\bump.ps1 minor      # 1.43.0 -> 1.44.0
@@ -74,8 +88,8 @@ pushes. It refuses to run while anything else is uncommitted, since that work wo
 tagged release — commit it first, or pass `-IncludeChanges` to bundle it into the release commit.
 `-NoPush` stops after tagging locally.
 
-Pushing the tag starts [`.github/workflows/release.yml`](.github/workflows/release.yml), which
-checks the tag matches the manifest version, packs `manifest.json` + the `.js` files + this README
+Either way [`.github/workflows/release.yml`](.github/workflows/release.yml) runs. It checks the tag
+matches the manifest version, packs `manifest.json` + the `.js` files + this README
 into `csgopremier-inventory-value.zip`, verifies every script the manifest declares is actually in
 the archive, and publishes the zip and `update.bat` as release assets. Follow it with `gh run watch`.
 

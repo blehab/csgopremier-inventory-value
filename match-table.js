@@ -1,7 +1,7 @@
 // A compact scoreboard on match pages (/match/<id>), laid out like the Overwatch card (overwatch-info.js).
 //
 // The site's Scoreboard tab is replaced by the two teams side by side (stacked when there isn't room),
-// one short row per player: country flag, avatar, username (opens their profile in a new tab), Steam id
+// one short row per player (a coloured bar on the left marks a party, as on the site's table): country flag, avatar, username (opens their profile in a new tab), Steam id
 // (opens steamcommunity.com and steamcommunity.now), a report flag on hover (not on your own row; it opens
 // the site's report form as a small dialog, see "report dialog" below), then rating, K / D / A, +/–, ADR, KAST and HS%. The
 // stat cells are shaded like a heatmap against the whole match, green above the average and red below.
@@ -169,7 +169,21 @@
     return `Lifetime: K/D ${(l.kdRatio ?? 0).toFixed(2)} · ADR ${Math.round(l.adr ?? 0)} · ${num(l.gamesTracked)} games`;
   }
 
-  function rowHtml(r, scales, mvp, matchId) {
+  // Players queued together get a coloured bar down the left of their rows, as on the site's own table: per
+  // team, each party of two or more gets the next of the site's five colours (blue, emerald, amber, purple,
+  // rose-400), in party id order.
+  const PARTY_COLORS = ["#60a5fa", "#34d399", "#fbbf24", "#c084fc", "#fb7185"];
+  function partyColors(rows) {
+    const counts = {};
+    for (const { p } of rows) if (p.partyId) counts[p.partyId] = (counts[p.partyId] || 0) + 1;
+    const colors = {};
+    Object.keys(counts)
+      .filter((id) => counts[id] >= 2)
+      .forEach((id, i) => (colors[id] = PARTY_COLORS[i % PARTY_COLORS.length]));
+    return colors;
+  }
+
+  function rowHtml(r, scales, mvp, matchId, party) {
     const { p } = r;
     const cells = COLUMNS.map((col) => {
       const v = col.get(r);
@@ -181,7 +195,7 @@
     }).join("");
     return `
       <tr class="group border-t border-white/[0.04] ${p.didNotJoin ? "opacity-40" : ""}" title="${escapeHtml(r.s?.extra || lifetimeText(p))}">
-        <td class="px-2.5 py-1">
+        <td class="px-2.5 py-1"${party ? ` style="box-shadow:inset 2px 0 0 ${party}"` : ""}>
           <div class="flex min-w-0 items-center gap-1.5">
             ${C() ? C().slotHtml(p.username) : ""}
             ${
@@ -233,6 +247,7 @@
     const kills = joined.reduce((t, r) => t + (r.s.kills || 0), 0);
     const adrs = joined.map((r) => r.s.adr).filter((v) => v != null);
     const avgAdr = adrs.length ? Math.round(adrs.reduce((a, b) => a + b, 0) / adrs.length) : null;
+    const parties = partyColors(rows);
     return `
       <div class="border border-white/[0.06] bg-black/25">
         <div class="flex items-center justify-between gap-2 border-b border-white/[0.06] px-2.5 py-1.5" style="box-shadow:inset 2px 0 0 ${ACCENT[side]}">
@@ -257,7 +272,7 @@
             </tr>
           </thead>
           <tbody>${sortRows(rows)
-            .map((r) => rowHtml(r, scales, String(r.p.steamId) === mvpId, matchId))
+            .map((r) => rowHtml(r, scales, String(r.p.steamId) === mvpId, matchId, parties[r.p.partyId]))
             .join("")}</tbody>
         </table>
       </div>`;
@@ -292,8 +307,8 @@
     const aScore = match.teamAScore ?? 0;
     const bScore = match.teamBScore ?? 0;
     const note = live
-      ? "Live, refreshed every 15 s · shading compares each stat across the match: green above average, red below · KAST and the entry, clutch and utility details come with the demo once the match ends · hover a row for lifetime stats · click a header to sort."
-      : "Shading compares each stat across the match: green above average, red below · hover a row for entry, clutch, multi-kill and utility · click a header to sort.";
+      ? "Live, refreshed every 15 s · shading compares each stat across the match: green above average, red below · KAST and the entry, clutch and utility details come with the demo once the match ends · hover a row for lifetime stats · a coloured bar on the left marks players queued together · click a header to sort."
+      : "Shading compares each stat across the match: green above average, red below · hover a row for entry, clutch, multi-kill and utility · a coloured bar on the left marks players queued together · click a header to sort.";
 
     card.innerHTML = `
       <div class="grid gap-2.5" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,540px),1fr))">
