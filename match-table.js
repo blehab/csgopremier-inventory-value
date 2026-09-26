@@ -2,7 +2,8 @@
 //
 // The site's Scoreboard tab is replaced by the two teams side by side (stacked when there isn't room),
 // one short row per player: country flag, avatar, username (opens their profile in a new tab), Steam id
-// (opens steamcommunity.com and steamcommunity.now), then rating, K / D / A, +/–, ADR, KAST and HS%. The
+// (opens steamcommunity.com and steamcommunity.now), a report flag on hover (not on your own row; it opens
+// the site's report form as a small dialog, see "report dialog" below), then rating, K / D / A, +/–, ADR, KAST and HS%. The
 // stat cells are shaded like a heatmap against the whole match, green above the average and red below.
 // Entry, clutch, multi-kill and utility numbers are in each row's tooltip, and "Full table" brings the
 // site's own table back (remembered). The Heatmaps and Replay tabs are left alone, but the tab strip's
@@ -39,10 +40,23 @@
   const STEAM_ID_CLASS = "cip-steam-id";
   const ID_TITLE = "Open on steamcommunity.com and steamcommunity.now";
   const profileLink = (username) => `/${encodeURIComponent(username)}`;
+  const reportLink = (username, matchId) => `/${encodeURIComponent(username)}/report?game=${encodeURIComponent(matchId)}`; // as the site's own rows
+  const FLAG_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-3 w-3" aria-hidden="true"><path d="M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528"></path></svg>';
 
   function getJson(url) {
     return fetch(url, { credentials: "include" }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
   }
+
+  // Your own Steam id, so your row gets no report flag (the site leaves it off too). "" if logged out.
+  let me = "";
+  getJson("/api/me").then(
+    (d) => {
+      me = String(d?.user?.steam_id || "");
+      cards.forEach(show);
+    },
+    () => {}
+  );
 
   function load(matchId) {
     if (!cache.has(matchId)) {
@@ -155,7 +169,7 @@
     return `Lifetime: K/D ${(l.kdRatio ?? 0).toFixed(2)} · ADR ${Math.round(l.adr ?? 0)} · ${num(l.gamesTracked)} games`;
   }
 
-  function rowHtml(r, scales, mvp) {
+  function rowHtml(r, scales, mvp, matchId) {
     const { p } = r;
     const cells = COLUMNS.map((col) => {
       const v = col.get(r);
@@ -166,7 +180,7 @@
       }</td>`;
     }).join("");
     return `
-      <tr class="border-t border-white/[0.04] ${p.didNotJoin ? "opacity-40" : ""}" title="${escapeHtml(r.s?.extra || lifetimeText(p))}">
+      <tr class="group border-t border-white/[0.04] ${p.didNotJoin ? "opacity-40" : ""}" title="${escapeHtml(r.s?.extra || lifetimeText(p))}">
         <td class="px-2.5 py-1">
           <div class="flex min-w-0 items-center gap-1.5">
             ${C() ? C().slotHtml(p.username) : ""}
@@ -187,6 +201,12 @@
                 : ""
             }
             ${p.didNotJoin ? `<span class="shrink-0 border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/45">No show</span>` : ""}
+            ${
+              p.username && String(p.steamId) !== me
+                ? `<a href="${reportLink(p.username, matchId)}" title="Report ${escapeHtml(p.username)}" data-report="${escapeHtml(p.username)}"
+                     class="ml-auto shrink-0 text-white/30 opacity-0 transition-opacity hover:text-primary group-hover:opacity-100 focus-visible:opacity-100">${FLAG_SVG}</a>`
+                : ""
+            }
           </div>
         </td>
         ${cells}
@@ -208,7 +228,7 @@
   // Team A / B accents, as on the site's own scoreboard.
   const ACCENT = { A: "#3b82f6", B: "#f59e0b" };
 
-  function teamHtml(rows, side, name, score, won, scales, mvpId) {
+  function teamHtml(rows, side, name, score, won, scales, mvpId, matchId) {
     const joined = rows.filter((r) => !r.p.didNotJoin && r.s);
     const kills = joined.reduce((t, r) => t + (r.s.kills || 0), 0);
     const adrs = joined.map((r) => r.s.adr).filter((v) => v != null);
@@ -237,7 +257,7 @@
             </tr>
           </thead>
           <tbody>${sortRows(rows)
-            .map((r) => rowHtml(r, scales, String(r.p.steamId) === mvpId))
+            .map((r) => rowHtml(r, scales, String(r.p.steamId) === mvpId, matchId))
             .join("")}</tbody>
         </table>
       </div>`;
@@ -277,8 +297,8 @@
 
     card.innerHTML = `
       <div class="grid gap-2.5" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,540px),1fr))">
-        ${teamHtml(a, "A", match.teamAName, aScore, done && aScore > bScore, scales, mvpId)}
-        ${teamHtml(b, "B", match.teamBName, bScore, done && bScore > aScore, scales, mvpId)}
+        ${teamHtml(a, "A", match.teamAName, aScore, done && aScore > bScore, scales, mvpId, card.cip.id)}
+        ${teamHtml(b, "B", match.teamBName, bScore, done && bScore > aScore, scales, mvpId, card.cip.id)}
       </div>
       <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
         <p class="font-mono text-[10px] leading-relaxed text-white/30">${note}</p>
@@ -306,6 +326,13 @@
     card.id = live ? LINEUP_ID : CARD_ID;
     card.cip = { id, live, targets: () => [], data: null, json: "", fetchedAt: 0 };
     card.addEventListener("click", (e) => {
+      const report = e.target.closest("a[data-report]");
+      if (report) {
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return; // a new tab gets the site's full page
+        e.preventDefault();
+        openReport(report.dataset.report, card.cip.id);
+        return;
+      }
       const steam = e.target.closest(`.${STEAM_ID_CLASS}`)?.dataset.steam;
       if (steam) {
         window.open(mirrorLink(steam), "_blank", "noopener"); // the anchor itself opens steamcommunity.com
@@ -361,6 +388,228 @@
     c.cip.targets = () => [...board.children].filter((el) => el !== c);
     applyView(c);
   }
+
+  // ---------- report dialog ----------
+  // The report flag opens the site's report form (/<username>/report?game=<id>) as a dialog over the match:
+  // the shared games to pick from (this match picked), the six reasons and the 300-character details box.
+  // It sends the same requests as that page: /api/users/<name> for the id, /api/reports/<id>/data for the
+  // shared games, and "Submit Report" POSTs { reason_category, reason, game_id? } to /api/reports/<id>.
+  // Ctrl/middle-click on the flag still opens the full page.
+
+  const REPORT_ID = "cip-report-dialog";
+  const REASONS = [
+    ["cheating", "Cheating"],
+    ["griefing", "Griefing"],
+    ["toxic", "Toxic Behavior"],
+    ["smurfing", "Smurfing"],
+    ["afk", "AFK / Leaving"],
+    ["other", "Other"],
+  ];
+  const REASON_MAX = 300;
+  const GHOST_BUTTON =
+    "border border-white/15 bg-white/[0.04] px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white/75 hover:bg-white/[0.08]";
+  const PRIMARY_BUTTON =
+    "border border-primary/60 bg-primary/20 px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary hover:bg-primary/30 disabled:cursor-not-allowed disabled:opacity-40";
+
+  // A POST the way the site's API client sends it (CSRF header from the cookie), as in multi-open.js.
+  async function apiPost(path, body) {
+    const csrf = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/)?.[1];
+    const res = await fetch(path, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf) } : {}) },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {}
+    if (!res.ok) throw new Error(data?.error || data?.message || text.trim() || `HTTP ${res.status}`);
+    return data;
+  }
+
+  let report = null; // { username, userId, games, game, reason, text, busy, error, done }
+
+  function closeReport() {
+    if (report?.busy) return;
+    report = null;
+    document.getElementById(REPORT_ID)?.remove();
+    document.removeEventListener("keydown", reportKeys, true);
+  }
+
+  function reportKeys(e) {
+    if (e.key !== "Escape") return;
+    e.stopPropagation();
+    closeReport();
+  }
+
+  async function openReport(username, matchId) {
+    closeReport();
+    const r = (report = { username, userId: null, games: null, game: Number(matchId) || null, reason: "", text: "", busy: false, error: "", done: false });
+    const el = document.createElement("div");
+    el.id = REPORT_ID;
+    el.className = "fixed inset-0 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm";
+    el.style.zIndex = "10100"; // above the site's own dialogs, like bulk-menu.js's
+    el.addEventListener("click", onReportClick);
+    el.addEventListener("input", (e) => {
+      if (!e.target.matches("textarea") || report !== r) return;
+      r.text = e.target.value.slice(0, REASON_MAX);
+      el.querySelector(".cip-report-count").textContent = `${r.text.length}/${REASON_MAX}`;
+    });
+    document.body.appendChild(el);
+    document.addEventListener("keydown", reportKeys, true);
+    drawReport();
+    try {
+      const user = (await getJson(`/api/users/${encodeURIComponent(username)}`))?.user;
+      if (!user?.ID) throw new Error("User not found");
+      const data = await getJson(`/api/reports/${user.ID}/data`);
+      if (report !== r) return;
+      r.userId = data?.reportUser?.id ?? user.ID;
+      r.games = data?.sharedGames || [];
+    } catch (e) {
+      if (report !== r) return;
+      r.error = `Could not load the report form: ${e.message}`;
+    }
+    drawReport();
+  }
+
+  function onReportClick(e) {
+    const r = report;
+    const el = document.getElementById(REPORT_ID);
+    if (!r || !el) return;
+    if (e.target === el || e.target.closest('[data-act="close"]')) return closeReport();
+    if (r.busy || r.done) return;
+    const game = e.target.closest("[data-game]");
+    if (game) {
+      const id = Number(game.dataset.game);
+      r.game = r.game === id ? null : id; // click again to un-pick, as on the site
+      return drawReport();
+    }
+    const reason = e.target.closest("[data-reason]");
+    if (reason) {
+      r.reason = reason.dataset.reason;
+      return drawReport();
+    }
+    if (e.target.closest('[data-act="submit"]')) submitReport();
+  }
+
+  async function submitReport() {
+    const r = report;
+    if (!r?.reason || !r.userId || r.busy) return;
+    r.busy = true;
+    r.error = "";
+    drawReport();
+    try {
+      await apiPost(`/api/reports/${r.userId}`, { reason_category: r.reason, reason: r.text, ...(r.game ? { game_id: r.game } : {}) });
+      r.done = true;
+    } catch (e) {
+      r.error = e.message || "Failed to submit report";
+    }
+    r.busy = false;
+    if (report !== r) return;
+    drawReport(); // on success the confirmation stays until it's closed
+    if (r.done) document.querySelector(`#${REPORT_ID} [data-act="close"]:not([title])`)?.focus(); // Enter closes it too
+  }
+
+  const gameDate = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(+d) ? "" : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+
+  function gameHtml(g, picked) {
+    return `
+      <button type="button" data-game="${escapeHtml(g.GameID)}"
+        class="flex min-w-0 items-center gap-2 border px-2 py-1.5 text-left transition-colors ${
+          picked ? "border-primary/60 bg-primary/10" : "border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.07]"
+        }">
+        ${g.MapImage ? `<img src="${escapeHtml(g.MapImage)}" alt="" class="h-6 w-10 shrink-0 object-cover opacity-70">` : ""}
+        <span class="min-w-0 flex-1">
+          <span class="block truncate text-[11px] font-bold uppercase tracking-wider text-white/80">${escapeHtml(g.Map || "Match")}</span>
+          <span class="block font-mono text-[10px] tabular-nums text-white/40">#${escapeHtml(g.GameID)} · ${escapeHtml(gameDate(g.PlayedAt))}</span>
+        </span>
+        <span class="shrink-0 font-mono text-[11px] font-bold tabular-nums">
+          <span style="color:${g.UserWon ? "#22c55e" : "#ef4444"}">${escapeHtml(g.UserScore ?? 0)}</span><span class="text-white/30"> – </span><span class="text-white/60">${escapeHtml(g.OpponentScore ?? 0)}</span>
+        </span>
+      </button>`;
+  }
+
+  const reportSection = (title, hint, body) => `
+    <div class="border-t border-white/5 px-4 py-3">
+      <div class="text-[9px] font-bold uppercase tracking-widest text-white/60">${title}</div>
+      <p class="mb-2 mt-0.5 text-[11px] text-white/35">${hint}</p>
+      ${body}
+    </div>`;
+
+  function reportFormHtml(r) {
+    const games = r.games.length
+      ? `<div class="grid gap-1.5" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">${r.games
+          .map((g) => gameHtml(g, Number(g.GameID) === r.game))
+          .join("")}</div>`
+      : `<p class="text-[11px] text-white/40">No recent games with this player.</p>`;
+    const reasons = `<div class="grid grid-cols-2 gap-1.5">${REASONS.map(([value, label]) => {
+      const on = r.reason === value;
+      return `
+        <button type="button" data-reason="${value}"
+          class="flex items-center gap-2 border px-2.5 py-2 text-left text-xs transition-colors ${
+            on ? "border-primary/60 bg-primary/10 text-white" : "border-white/[0.06] bg-white/[0.03] text-white/80 hover:bg-white/[0.07]"
+          }">
+          <span class="flex h-3.5 w-3.5 shrink-0 items-center justify-center border-2 ${on ? "border-primary bg-primary" : "border-white/40"}">${
+            on ? `<span class="h-1 w-1 bg-white"></span>` : ""
+          }</span>${label}
+        </button>`;
+    }).join("")}</div>`;
+    const details = `
+      <div class="relative">
+        <textarea maxlength="${REASON_MAX}" rows="3" placeholder="Describe the incident in detail..." ${r.busy ? "disabled" : ""}
+          class="block w-full resize-none border border-white/[0.08] bg-black/30 px-2.5 py-2 pb-4 text-xs text-white/85 placeholder:text-white/25 focus:border-primary/50 focus:outline-none">${escapeHtml(r.text)}</textarea>
+        <span class="cip-report-count pointer-events-none absolute bottom-1.5 right-2 font-mono text-[9px] tabular-nums text-white/30">${r.text.length}/${REASON_MAX}</span>
+      </div>`;
+    return `
+      ${reportSection("Game Reference", "Select a game where the violation occurred (optional)", games)}
+      ${reportSection("Report Reason", "Select the reason for your report", reasons)}
+      ${reportSection("Additional Details", "Provide any additional context that may help with the investigation", details)}
+      <p class="border-t border-white/5 px-4 py-2.5 text-[10px] leading-relaxed text-white/40"><span class="font-bold uppercase tracking-wider text-amber-400/80">Important</span> · All reports are reviewed by our moderation team. Abuse of the report system may result in penalties to your account.</p>
+      <div class="flex items-center justify-end gap-2 border-t border-white/5 px-4 py-3">
+        ${r.error ? `<span class="mr-auto text-[11px] text-red-400">${escapeHtml(r.error)}</span>` : ""}
+        <button type="button" data-act="close" class="${GHOST_BUTTON}" ${r.busy ? "disabled" : ""}>Cancel</button>
+        <button type="button" data-act="submit" class="${PRIMARY_BUTTON}" ${!r.reason || r.busy ? "disabled" : ""}>${r.busy ? "Submitting…" : "Submit Report"}</button>
+      </div>`;
+  }
+
+  function drawReport() {
+    const r = report;
+    const el = document.getElementById(REPORT_ID);
+    if (!r || !el) return;
+    let body;
+    if (r.done) {
+      body = `<div class="px-5 py-6 text-sm text-white/80">Report submitted successfully.</div>
+        <div class="flex justify-end border-t border-white/5 px-4 py-3"><button type="button" data-act="close" class="${GHOST_BUTTON}">Close</button></div>`;
+    } else if (r.games) {
+      body = reportFormHtml(r);
+    } else if (r.error) {
+      body = `<div class="px-5 py-5 text-sm text-white/70">${escapeHtml(r.error)}</div>
+        <div class="flex justify-end border-t border-white/5 px-4 py-3"><button type="button" data-act="close" class="${GHOST_BUTTON}">Close</button></div>`;
+    } else {
+      body = `<div class="flex items-center gap-3 px-5 py-6">
+          <span class="h-4 w-4 animate-spin rounded-full border-2 border-primary/30 border-t-primary"></span>
+          <p class="text-sm text-white/70">Loading…</p>
+        </div>`;
+    }
+    const scroll = el.querySelector(".cip-report-body")?.scrollTop || 0;
+    el.innerHTML = `
+      <div class="relative flex w-full max-w-lg flex-col overflow-hidden border border-primary/25 bg-[rgba(13,13,18,0.98)]" style="max-height:86vh;box-shadow:0 24px 70px rgba(0,0,0,0.6)">
+        <span class="pointer-events-none absolute left-0 top-0 z-20 h-4 w-4 border-l-2 border-t-2 border-primary/70"></span>
+        <span class="pointer-events-none absolute bottom-0 right-0 z-20 h-4 w-4 border-b-2 border-r-2 border-primary/70"></span>
+        <div class="flex items-center justify-between bg-primary/[0.035] px-4 py-2.5 font-mono text-[9px] uppercase tracking-widest">
+          <div class="flex min-w-0 items-center gap-2 font-bold text-white/70"><span class="text-primary">${FLAG_SVG}</span><span class="truncate">Report ${escapeHtml(r.username)}</span></div>
+          <button type="button" data-act="close" title="Close (Esc)" class="px-1 text-sm leading-none text-white/40 hover:text-white">×</button>
+        </div>
+        <div class="cip-report-body overflow-y-auto">${body}</div>
+      </div>`;
+    el.querySelector(".cip-report-body").scrollTop = scroll;
+  }
+
 
   // ---------- live lineup ----------
   // Before a match finishes, the site shows a lineup instead of the scoreboard: rating, lifetime K/D and ADR

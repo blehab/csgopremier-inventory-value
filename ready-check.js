@@ -16,6 +16,11 @@
 // is live: it carries every player's accepted flag, their partyId and avatar, and acceptDeadline. A ready
 // check counts as live while that deadline is in the future and not everyone has accepted yet.
 //
+// The ready check is anonymous: while it runs, the server sends every player's username as "Player" (the
+// site's own dialog shows "Anonymous player N"). The people named here are the ones in your own party,
+// so their real names and avatars come from /api/party, matched on user id; the partyId match above is
+// only the fallback for when that roster can't be loaded.
+//
 // Runs in the page's MAIN world, because the store is only reachable through React's fiber tree.
 (() => {
   const CHIP_ID = "cip-ready-chip";
@@ -26,6 +31,7 @@
 
   let getStore = null; // the store's snapshot getter, cached between passes
   let mySteamId = null;
+  let myUserId = "";
   let revealed = null; // the match id whose dialog you asked to see again
 
   const fiberOf = (el) => el && el[Object.keys(el).find((k) => k.startsWith("__reactFiber"))];
@@ -85,6 +91,7 @@
     try {
       const data = await (await fetch("/api/me", { credentials: "include" })).json();
       mySteamId = String(data?.user?.steam_id || "");
+      myUserId = String(data?.user?.id ?? "");
     } catch {
       /* without it the chip still counts, it just can't tell which player is you */
     }
@@ -112,6 +119,43 @@
     return null;
   }
 
+  // Your party's real names and avatars (user id → { username, avatarUrl }), loaded once per ready check.
+  let roster = { matchId: null, members: new Map() };
+
+  function loadRoster(matchId) {
+    if (roster.matchId === matchId) return;
+    roster = { matchId, members: new Map() };
+    fetch("/api/party", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (roster.matchId !== matchId) return;
+        for (const m of data?.party?.Members || []) {
+          if (m?.ID != null && m.Username) roster.members.set(String(m.ID), { username: m.Username, avatarUrl: m.Avatar || "" });
+        }
+        update();
+      })
+      .catch(() => {
+        if (roster.matchId === matchId) roster.matchId = null; // try again on the next poll
+      });
+  }
+
+  const findMine = (players) =>
+    players.find((p) => (mySteamId && String(p.steamId) === mySteamId) || (myUserId && String(p.userId) === myUserId));
+
+  // The other people in your party, with their real names put back.
+  function partyOf(players, mine) {
+    const members = roster.members;
+    const party = members.size
+      ? players.filter((p) => members.has(String(p.userId)) && p !== mine && String(p.userId) !== myUserId)
+      : mine?.partyId
+        ? players.filter((p) => p.partyId === mine.partyId && p !== mine)
+        : [];
+    return party.map((p) => {
+      const m = members.get(String(p.userId));
+      return m ? { ...p, username: m.username, avatarUrl: m.avatarUrl || p.avatarUrl } : p;
+    });
+  }
+
   function toCheck(matchId, data) {
     const players = [...(data.teamA || []), ...(data.teamB || [])];
     if (!players.length) return null;
@@ -120,16 +164,8 @@
     const accepted = players.filter((p) => p.accepted).length;
     // The ready check is over once the deadline passes or everyone is in: the match itself takes over.
     if (secondsLeft == null || secondsLeft <= 0 || accepted === players.length) return null;
-    const mine = players.find((p) => String(p.steamId) === mySteamId);
-    return {
-      matchId,
-      players,
-      mine,
-      accepted,
-      total: players.length,
-      secondsLeft,
-      party: mine?.partyId ? players.filter((p) => p.partyId === mine.partyId && p.steamId !== mine.steamId) : [],
-    };
+    const mine = findMine(players);
+    return { matchId, players, mine, accepted, total: players.length, secondsLeft };
   }
 
   // The server's answer, kept for a couple of seconds so every pass doesn't re-ask.
@@ -159,14 +195,7 @@
     if (!data || (data.gameId ?? null) !== check.matchId) return check;
     const players = [...(data.teamA || []), ...(data.teamB || [])];
     if (players.length !== check.total) return check;
-    const mine = players.find((p) => String(p.steamId) === mySteamId);
-    return {
-      ...check,
-      players,
-      mine: mine ?? check.mine,
-      accepted: players.filter((p) => p.accepted).length,
-      party: mine?.partyId ? players.filter((p) => p.partyId === mine.partyId && p.steamId !== mine.steamId) : check.party,
-    };
+    return { ...check, players, mine: findMine(players) ?? check.mine, accepted: players.filter((p) => p.accepted).length };
   }
 
   // The counts age between polls; the countdown doesn't need to.
@@ -175,6 +204,11 @@
     if (!check) return null;
     const secondsLeft = check.secondsLeft - Math.round((Date.now() - cached.at) / 1000);
     return secondsLeft > 0 ? { ...check, secondsLeft } : null;
+  }
+
+  // The party (with real names) is worked out last, from whichever player list won.
+  function withParty(check) {
+    return { ...check, party: partyOf(check.players, check.mine) };
   }
 
   // ---------- the dialog ----------
@@ -298,7 +332,8 @@
     const matchId = currentMatchId();
     if (matchId != null) refresh(matchId);
     const stale = liveCheck();
-    const check = stale ? withStoreData(stale) : null;
+    if (stale) loadRoster(stale.matchId);
+    const check = stale ? withParty(withStoreData(stale)) : null;
     if (!check) {
       // no ready check, or it's over: put everything back
       clearChip();
