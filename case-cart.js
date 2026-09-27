@@ -4,14 +4,19 @@
 // Every tile that's in stock gets a small cart button beside its "Buy" (showing ×N once it's in the cart);
 // each click adds one, up to what the dialog would allow (the stock left, at most 50). The cart itself is
 // a panel in the bottom-right corner: one line per item with − / + and a quantity box, the line price, the
-// total, and the wallet before and after. It collapses to a small bar and is remembered in localStorage.
+// total, and the wallet, the cart's total taken off it and what's left. It collapses to a small bar and is
+// remembered in localStorage. The cart never holds more than the wallet covers: adding past that (from a
+// tile, "+" or the quantity box) is refused with a "Not enough PP" notice above the panel, until something
+// is removed.
 //
 // "Buy all" asks for a second click ("Confirm"), then buys line by line with the dialog's own requests:
 //   GET /api/shop/cases/<id> (or /sticker-packs/<id>) for the current price and stock, then
 //   POST /api/shop/cases/buy/<id> { quantity, expected_price_pp } (or /sticker-packs/buy/<id> { quantity }).
 // A line whose price went up or whose stock went down since the cart showed it is skipped (and updated),
 // so nothing costs more than the total that was confirmed. Cases need Premium Pro, as in the dialog.
-// Bought lines leave the cart; the rest stay with their error, and a line says what was bought (Clear hides it). The page's data is refreshed afterwards,
+// Bought lines leave the cart; the rest stay with their error, and a line says what was bought. When
+// everything went through, that line goes away after a few seconds (and with it the emptied panel); it's
+// also dropped on leaving the shop, so coming back doesn't show an old purchase. The page's data is refreshed afterwards,
 // the same queries the dialog refreshes.
 //
 // Prices, names and images come from the page's React Query data (["case-shop"] / ["sticker-pack-shop"]),
@@ -71,6 +76,8 @@
   let confirmUntil = 0;
   let confirmTimer = 0;
   let status = null; // { ok, text } after a checkout
+  let statusTimer = 0;
+  const STATUS_MS = 6000;
 
   const fiberOf = (el) => el && el[Object.keys(el).find((k) => k.startsWith("__reactFiber"))];
   const onCasesPage = () => location.pathname.startsWith(CASES_PATH);
@@ -100,7 +107,8 @@
     const cases = client?.getQueryData(["case-shop"]);
     const balance = client?.getQueryData(["pp-balance"]);
     return {
-      balance: cases?.pp_balance ?? balance?.balance ?? balance?.pp_balance ?? null,
+      // ["pp-balance"] is what the top bar shows, and it's refetched every minute; the shop's copy is older.
+      balance: balance?.balance ?? cases?.pp_balance ?? null,
       frozen: !!cases?.pp_frozen,
       isPro: !!cases?.is_pro,
     };
@@ -133,11 +141,59 @@
 
   // ---------- adding ----------
 
+  // PP left once the rest of the cart (every line but `except`) is paid for; null if the balance isn't known.
+  function spareFor(client, except) {
+    const { balance } = wallet(client);
+    if (balance == null) return null;
+    let used = 0;
+    for (const l of lines) {
+      const shop = l === except ? null : shopEntry(client, l.kind, l.id);
+      if (shop) used += shop.price * l.qty;
+    }
+    return balance - used;
+  }
+
+  // A notice above the cart panel, gone after a few seconds.
+  const TOAST_ID = "cip-case-cart-toast";
+  const TOAST_MS = 4500;
+  let toastTimer = 0;
+  function notify(title, text) {
+    let toast = document.getElementById(TOAST_ID);
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = TOAST_ID;
+      toast.setAttribute("role", "alert");
+      toast.className = "border border-primary/50 px-3 py-2 text-xs leading-snug shadow-2xl";
+      toast.addEventListener("click", () => toast.remove());
+      document.body.appendChild(toast);
+    }
+    const panelEl = document.getElementById(PANEL_ID);
+    toast.style.cssText =
+      `position:fixed;right:16px;bottom:${panelEl ? panelEl.offsetHeight + 24 : 16}px;z-index:41;cursor:pointer;` +
+      "width:min(400px,calc(100vw - 32px));background:rgba(28,10,16,0.97);backdrop-filter:blur(6px)";
+    toast.innerHTML = `<div class="font-bold uppercase tracking-wider text-primary">${escapeHtml(title)}</div><div class="mt-0.5 text-white/75">${escapeHtml(text)}</div>`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.remove(), TOAST_MS);
+  }
+
+  function notEnough(name, price, spare) {
+    notify(
+      "Not enough PP",
+      `${name} costs ${num(price)} PP, and after the cart you'd have ${num(Math.max(0, spare))} PP left. Remove something from the cart to add more.`
+    );
+  }
+
   function add(kind, id) {
     const client = findQueryClient();
     const shop = shopEntry(client, kind, id);
     if (!shop || shop.max < 1) return;
     let line = lines.find((l) => l.kind === kind && l.id === id);
+    const spare = spareFor(client, line);
+    const have = line?.qty || 0;
+    if (have < shop.max && spare != null && shop.price * (have + 1) > spare) {
+      notEnough(shop.entry.name, shop.price, spare - shop.price * have);
+      return;
+    }
     if (!line) lines.push((line = { kind, id, qty: 0, name: shop.entry.name, error: "" }));
     line.qty = Math.min(shop.max, line.qty + 1);
     line.error = "";
@@ -228,6 +284,7 @@
     for (const line of lines) {
       const shop = shopEntry(client, line.kind, line.id);
       if (!shop) problem ||= "Remove the items that are no longer in the shop";
+      else if (shop.max < 1) problem ||= `Remove ${shop.entry.name}: sold out`;
       else if (line.qty > shop.max) problem ||= `Only ${shop.max} ${shop.entry.name} left`;
       else if (line.kind === "case" && !shop.isPro) problem ||= "Buying cases needs Premium Pro";
       else {
@@ -264,6 +321,7 @@
         ${
           s.balance != null
             ? `<div class="flex justify-between text-white/50"><span>Wallet</span><span class="tabular-nums text-white/80">${pp(s.balance)}</span></div>
+               <div class="flex justify-between text-white/50"><span>Cart</span><span class="tabular-nums text-primary">− ${pp(s.total)}</span></div>
                <div class="flex justify-between text-white/50"><span>After buying</span><span class="tabular-nums text-white/80">${pp(Math.max(0, s.balance - s.total))}</span></div>`
             : ""
         }
@@ -297,6 +355,11 @@
   }
 
   function render() {
+    if (!onCasesPage()) document.getElementById(TOAST_ID)?.remove();
+    if (!onCasesPage() && status && !busy) {
+      status = null; // left the shop: the last purchase's message is done with
+      clearTimeout(statusTimer);
+    }
     const show = onCasesPage() && (lines.length > 0 || !!status); // an emptied cart stays up with what was bought
     const existing = document.getElementById(PANEL_ID);
     if (!show) {
@@ -318,10 +381,18 @@
   function setQty(i, qty) {
     const line = lines[i];
     if (!line) return;
-    const shop = shopEntry(findQueryClient(), line.kind, line.id);
+    const client = findQueryClient();
+    const shop = shopEntry(client, line.kind, line.id);
     const max = shop ? shop.max : line.qty;
     qty = Math.floor(Number(qty));
     if (!Number.isFinite(qty)) qty = line.qty;
+    const spare = spareFor(client, line);
+    if (shop && spare != null && qty > line.qty && qty * shop.price > spare) {
+      // Raise it only as far as the wallet goes (never below where it was).
+      const fits = Math.max(line.qty, Math.floor(spare / shop.price));
+      notEnough(shop.entry.name, shop.price, spare - shop.price * fits);
+      qty = fits;
+    }
     if (qty < 1) lines.splice(i, 1);
     else line.qty = Math.min(qty, Math.max(1, max));
     if (lines[i] === line) line.error = "";
@@ -336,6 +407,7 @@
     if (!input) return;
     const i = Number(input.closest("[data-line]").dataset.line);
     input.blur();
+    panel().cipHtml = ""; // redraw even if the quantity ends up unchanged, so the box shows it again
     setQty(i, input.value);
   }
 
@@ -413,7 +485,16 @@
       ? { ok: !failed.length, text: `Bought ${bought.join(", ")}.${failed.length ? ` ${failed.length} ${failed.length === 1 ? "line" : "lines"} not bought, see above.` : ""}` }
       : { ok: false, text: "Nothing was bought, see above." };
     save();
-    for (const key of REFRESH) client?.invalidateQueries({ queryKey: [key] });
+    render();
+    clearTimeout(statusTimer);
+    if (!failed.length) {
+      statusTimer = setTimeout(() => {
+        status = null;
+        render();
+      }, STATUS_MS);
+    }
+    // The same refresh as the site's dialog, so the wallet, stock and inventory show the purchase.
+    await Promise.all(REFRESH.map((key) => client?.invalidateQueries({ queryKey: [key] })));
     render();
   }
 

@@ -31,6 +31,7 @@ loaded from `flagcdn.com` (Windows doesn't render flag emoji).
 | `auto-accept.js` | Optional auto-accept of the match-found dialog (off by default) |
 | `invite-accept.js` | Optional auto-accept of party (lobby) invites, switched in the site's Settings panel (off by default) |
 | `match-table.js` | A compact scoreboard on match pages: both teams side by side, laid out like the Overwatch card, with heatmap-shaded stats (the site's full table is one click away), and the same table for live matches, refreshed every 15 s |
+| `join-game.js` | A "Join game" button beside "Copy connect" on match pages once the server is up: a `steam://run/4465480//+connect <ip>:<port>` link that starts CS:GO (Steam app 4465480) and joins the match server |
 | `match-card.js` | The Overwatch card's look (header chips, team boxes, player rows), used by the Overwatch page (and for the live match table's panel) |
 | `country-flags.js` | Country flag images next to players in the match scoreboard and the Overwatch card |
 | `overwatch-info.js` | Match details above the clip on the Overwatch review page |
