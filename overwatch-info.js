@@ -114,12 +114,15 @@
       </div>`;
   }
 
+  // Each team's players, most kills first.
+  const byKills = (players) => [...(players || [])].sort((a, b) => (b.stats?.kills ?? -1) - (a.stats?.kills ?? -1));
+
   function render(card, ids, state, data, error) {
     const suspect = data ? [...(data.teamA || []), ...(data.teamB || [])].find((p) => String(p.steamId) === ids.steamId) : null;
     let body = "";
     if (state === "loading") body = `<div class="ui-meta mt-2 text-white/30">Loading match details…</div>`;
     else if (state === "error") body = `<div class="ui-meta mt-2 text-white/30">Match details unavailable (${escapeHtml(error)}).</div>`;
-    else body = M.teamsHtml(data, M.statColumns(data), { steamId: ids.steamId, tag: "Suspect" }, "cip-ow-body");
+    else body = M.teamsHtml({ ...data, teamA: byKills(data.teamA), teamB: byKills(data.teamB) }, M.statColumns(data), { steamId: ids.steamId, tag: "Suspect" }, "cip-ow-body");
     card.innerHTML = headerHtml(ids, data, suspect) + body;
     window.__cipCountry?.fillFlags(card); // country-flags.js
     applyOpen(card);

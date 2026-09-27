@@ -2,12 +2,13 @@
 // of one "Buy" dialog at a time.
 //
 // Every tile that's in stock gets a small cart button beside its "Buy" (showing ×N once it's in the cart);
-// each click adds one, up to what the dialog would allow (the stock left, at most 50). The cart itself is
-// a panel in the bottom-right corner: one line per item with − / + and a quantity box, the line price, the
-// total, and the wallet, the cart's total taken off it and what's left. It collapses to a small bar and is
-// remembered in localStorage. The cart never holds more than the wallet covers: adding past that (from a
-// tile, "+" or the quantity box) is refused with a "Not enough PP" notice above the panel, until something
-// is removed.
+// each click adds one, up to what the dialog would allow (the stock left, at most 50). A "Max" button next
+// to it fills the cart with as many as that allows and the wallet covers, as does "Max" on a cart line.
+// The cart itself is a panel in the bottom-right corner: one line per item with − / + / Max and a quantity
+// box, the line price, the total, and the wallet, the cart's total taken off it and what's left. It
+// collapses to a small bar and is remembered in localStorage. The cart never holds more than the wallet
+// covers: adding past that (from a tile, "+" or the quantity box) is refused with a "Not enough PP" notice
+// above the panel, until something is removed.
 //
 // "Buy all" asks for a second click ("Confirm"), then buys line by line with the dialog's own requests:
 //   GET /api/shop/cases/<id> (or /sticker-packs/<id>) for the current price and stock, then
@@ -16,14 +17,19 @@
 // so nothing costs more than the total that was confirmed. Cases need Premium Pro, as in the dialog.
 // Bought lines leave the cart; the rest stay with their error, and a line says what was bought. When
 // everything went through, that line goes away after a few seconds (and with it the emptied panel); it's
-// also dropped on leaving the shop, so coming back doesn't show an old purchase. The page's data is refreshed afterwards,
-// the same queries the dialog refreshes.
+// also dropped on leaving the shop, so coming back doesn't show an old purchase. The page's data is
+// refreshed afterwards, the same queries the dialog refreshes. While it buys (and a little after, for the
+// socket's late events) the page carries data-cip-cart-buying, so crate-received.js words its grouped
+// notices "Bought 5× …" instead of popping a dialog per case.
 //
 // Prices, names and images come from the page's React Query data (["case-shop"] / ["sticker-pack-shop"]),
 // the same data the tiles are drawn from; see case-shop.js. Runs in the page's MAIN world for that.
 (() => {
   const PANEL_ID = "cip-case-cart";
   const ADD_CLASS = "cip-cart-add";
+  const MAX_CLASS = "cip-cart-max";
+  const BUYING_ATTR = "data-cip-cart-buying";
+  const BUYING_LINGER_MS = 10000;
   const HOST_ATTR = "data-cip-cart-host";
   const STORAGE_KEY = "cip-case-cart";
   const CASES_PATH = "/armory/cases";
@@ -77,6 +83,7 @@
   let confirmTimer = 0;
   let status = null; // { ok, text } after a checkout
   let statusTimer = 0;
+  let buyingTimer = 0;
   const STATUS_MS = 6000;
 
   const fiberOf = (el) => el && el[Object.keys(el).find((k) => k.startsWith("__reactFiber"))];
@@ -183,19 +190,25 @@
     );
   }
 
-  function add(kind, id) {
+  // One more of an item, or with `all` as many as can be bought (the stock/50 cap, then the wallet).
+  function add(kind, id, all) {
     const client = findQueryClient();
     const shop = shopEntry(client, kind, id);
     if (!shop || shop.max < 1) return;
     let line = lines.find((l) => l.kind === kind && l.id === id);
     const spare = spareFor(client, line);
     const have = line?.qty || 0;
-    if (have < shop.max && spare != null && shop.price * (have + 1) > spare) {
-      notEnough(shop.entry.name, shop.price, spare - shop.price * have);
-      return;
+    let want = all ? shop.max : Math.min(shop.max, have + 1);
+    if (spare != null && shop.price > 0 && shop.price * want > spare) {
+      const fits = Math.max(have, Math.floor(spare / shop.price));
+      if (fits <= have) {
+        if (have < shop.max) notEnough(shop.entry.name, shop.price, spare - shop.price * have);
+        return;
+      }
+      want = fits;
     }
     if (!line) lines.push((line = { kind, id, qty: 0, name: shop.entry.name, error: "" }));
-    line.qty = Math.min(shop.max, line.qty + 1);
+    line.qty = want;
     line.error = "";
     status = null;
     open = true;
@@ -215,10 +228,11 @@
     for (const card of document.querySelectorAll("article")) {
       const item = idOf(card);
       if (!item) continue;
-      const buy = [...card.querySelectorAll("button")].find((b) => !b.classList.contains(ADD_CLASS) && /buy|sold out/i.test(b.textContent));
+      const buy = [...card.querySelectorAll("button")].find((b) => !b.classList.contains(ADD_CLASS) && !b.classList.contains(MAX_CLASS) && /buy|sold out/i.test(b.textContent));
       if (!buy) continue;
       const host = buy.parentElement;
       let btn = host.querySelector(`:scope > .${ADD_CLASS}`);
+      let maxBtn = host.querySelector(`:scope > .${MAX_CLASS}`);
       const shop = shopEntry(client, item.kind, item.id);
       const inCart = lines.find((l) => l.kind === item.kind && l.id === item.id)?.qty || 0;
       const can = !!shop && shop.max > 0 && inCart < shop.max && !buy.disabled;
@@ -233,6 +247,12 @@
         host.setAttribute(HOST_ATTR, "");
         buy.insertAdjacentElement("afterend", btn);
       }
+      if (!maxBtn) {
+        maxBtn = btn.cloneNode(false);
+        maxBtn.classList.replace(ADD_CLASS, MAX_CLASS);
+        maxBtn.textContent = "Max";
+        btn.insertAdjacentElement("afterend", maxBtn);
+      }
       const html = inCart ? `${CART_ICON}<span class="tabular-nums">×${inCart}</span>` : `${PLUS_ICON}${CART_ICON}`;
       if (btn.innerHTML !== html) btn.innerHTML = html;
       if (btn.disabled !== !can) btn.disabled = !can;
@@ -240,6 +260,11 @@
       const title = !shop || shop.max < 1 ? "Sold out" : inCart >= shop.max ? `All ${shop.max} you can buy are in the cart` : `Add one to the cart`;
       if (btn.title !== title) btn.title = title;
       btn.setAttribute("aria-label", `${title}: ${shop?.entry.name || ""}`);
+      if (maxBtn.disabled !== !can) maxBtn.disabled = !can;
+      if (maxBtn.hidden !== btn.hidden) maxBtn.hidden = btn.hidden;
+      const maxTitle = can ? `Add as many as you can buy (up to ${shop.max}) to the cart` : title;
+      if (maxBtn.title !== maxTitle) maxBtn.title = maxTitle;
+      maxBtn.setAttribute("aria-label", `${maxTitle}: ${shop?.entry.name || ""}`);
     }
   }
 
@@ -269,6 +294,7 @@
           <input type="text" inputmode="numeric" data-act="qty" value="${line.qty}" ${busy ? "disabled" : ""} aria-label="Quantity"
                  class="w-8 bg-transparent text-center font-mono text-xs tabular-nums text-white outline-none">
           <button type="button" data-act="inc" class="px-1.5 py-0.5 text-white/50 hover:text-white disabled:opacity-30" ${busy || line.qty >= max ? "disabled" : ""} aria-label="One more">+</button>
+          <button type="button" data-act="max" class="border-l border-white/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/50 hover:text-white disabled:opacity-30" ${busy || line.qty >= max ? "disabled" : ""} title="As many as you can buy" aria-label="As many as you can buy">Max</button>
         </div>
         <div class="w-[72px] shrink-0 text-right text-xs font-bold tabular-nums text-white">${shop ? pp(shop.price * line.qty) : "–"}</div>
         <button type="button" data-act="remove" class="shrink-0 px-1 text-white/30 hover:text-primary disabled:opacity-30" ${busy ? "disabled" : ""} title="Remove" aria-label="Remove">✕</button>
@@ -421,6 +447,11 @@
       save();
     } else if (act === "inc") setQty(i, lines[i].qty + 1);
     else if (act === "dec") setQty(i, lines[i].qty - 1);
+    else if (act === "max") {
+      const line = lines[i];
+      add(line.kind, line.id, true);
+      return;
+    }
     else if (act === "remove") setQty(i, 0);
     else if (act === "clear") {
       lines = [];
@@ -447,6 +478,8 @@
     const confirmed = new Map(lines.map((l) => [l, shopEntry(client, l.kind, l.id)?.price])); // what the confirmed total used
     busy = true;
     status = null;
+    clearTimeout(buyingTimer);
+    document.documentElement.setAttribute(BUYING_ATTR, "");
     render();
     const bought = [];
     const failed = [];
@@ -481,6 +514,7 @@
       render();
     }
     busy = false;
+    buyingTimer = setTimeout(() => document.documentElement.removeAttribute(BUYING_ATTR), BUYING_LINGER_MS);
     status = bought.length
       ? { ok: !failed.length, text: `Bought ${bought.join(", ")}.${failed.length ? ` ${failed.length} ${failed.length === 1 ? "line" : "lines"} not bought, see above.` : ""}` }
       : { ok: false, text: "Nothing was bought, see above." };
@@ -502,7 +536,8 @@
 
   const style = document.createElement("style");
   style.textContent = `
-    [${HOST_ATTR}] { display: grid !important; grid-template-columns: minmax(0, 1fr) auto; column-gap: 6px; }
+    [${HOST_ATTR}] { display: grid !important; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 6px; }
+    [${HOST_ATTR}]:has(> .${ADD_CLASS}[hidden]) { grid-template-columns: minmax(0, 1fr); }
     [${HOST_ATTR}] > :first-child { grid-column: 1 / -1; }
     [${HOST_ATTR}] > button { margin: 0 !important; }
     [${HOST_ATTR}] > button[hidden] { display: none !important; }
@@ -512,11 +547,11 @@
   document.addEventListener(
     "click",
     (e) => {
-      const btn = e.target.closest(`.${ADD_CLASS}`);
+      const btn = e.target.closest(`.${ADD_CLASS}, .${MAX_CLASS}`);
       if (!btn) return;
       e.preventDefault();
       e.stopPropagation();
-      if (!btn.disabled) add(btn.dataset.kind, btn.dataset.id);
+      if (!btn.disabled) add(btn.dataset.kind, btn.dataset.id, btn.classList.contains(MAX_CLASS));
     },
     true
   );

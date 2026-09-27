@@ -37,7 +37,7 @@
     return !!id;
   }
 
-  // "Match #123  MAP  MODE  REGION  STATUS  12 : 16"
+  // "Match #123  MAP  MODE  REGION  STATUS  12 : 16"; "Match #123" opens the match page (/match/123).
   function titleHtml(matchId, data) {
     const chips = data
       ? [data.map && label(data.map), data.gameMode && label(data.gameMode), data.region, data.status && label(data.status)]
@@ -51,7 +51,8 @@
         : "";
     return `
       <div class="flex flex-wrap items-center gap-2">
-        <span class="ui-overline text-secondary">Match #${escapeHtml(matchId)}</span>
+        <a href="/match/${encodeURIComponent(matchId)}" target="_blank" rel="noopener noreferrer" title="Open match #${escapeHtml(matchId)}"
+           class="ui-overline text-secondary hover:underline">Match #${escapeHtml(matchId)}</a>
         ${chips}
         ${score}
       </div>`;
