@@ -10,6 +10,9 @@ rem  creating that folder on first run and replacing the files in it after that.
 rem  Keep this script wherever you like - the install folder is fixed, so it
 rem  does not matter where you run it from.
 rem
+rem  Afterwards it runs setup.ps1 from the release, which lets csgopremier.com
+rem  open Steam without Chrome asking first (for the "Join game" button).
+rem
 rem  Chrome will not notice by itself: when this finishes, open
 rem  chrome://extensions and press the reload arrow on the extension's card.
 rem
@@ -93,6 +96,15 @@ if errorlevel 1 (
 )
 
 call :readversion "%TARGET%\manifest.json" AFTER
+
+rem setup.ps1 comes in the zip: it lets csgopremier.com open steam:// links (the "Join game"
+rem button) without Chrome's "Open Steam?" prompt. A failure there doesn't undo the update.
+if exist "%TARGET%\setup.ps1" (
+  echo.
+  echo Running setup.ps1 ...
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%TARGET%\setup.ps1"
+  if errorlevel 1 echo WARNING: setup.ps1 failed - the extension is updated, but Chrome may still ask before opening Steam.
+)
 
 echo.
 if "%BEFORE%"=="" (

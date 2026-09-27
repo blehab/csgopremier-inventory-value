@@ -69,7 +69,8 @@ jobs:
           # What a user needs in their unpacked-extension folder. update.bat is deliberately
           # excluded and published as its own asset instead, so an update can never overwrite
           # the script that is doing the updating.
-          cp manifest.json README.md dist/pkg/
+          # setup.ps1 is run by update.bat after unpacking (bump.ps1 is a dev tool and stays out).
+          cp manifest.json README.md setup.ps1 dist/pkg/
           cp ./*.js dist/pkg/
           # Zip from inside the staging dir so entries sit at the archive root and extract
           # straight into the extension folder rather than into a nested one.
@@ -99,6 +100,10 @@ jobs:
             fi
           done < declared.txt
           echo "$(wc -l < declared.txt) content scripts packed, all declared ones present."
+          if ! grep -qx 'setup.ps1' entries.txt; then
+            echo '::error::setup.ps1 is missing from the zip; update.bat would skip the Chrome setup.'
+            exit 1
+          fi
 
       - name: Publish the release
         if: steps.v.outputs.skip != 'true'
