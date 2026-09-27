@@ -6,7 +6,7 @@
 // 4465480, not CS2's 730) with that command, the same as pasting it. steam://connect/ isn't used: it
 // picks the game from the app id the server reports, and CS:GO servers report 730, which opens CS2.
 // The site's command has no password, so neither does the link.
-// Chrome asks before a site opens Steam; setup.ps1 (run by update.bat) pre-approves csgopremier.com.
+// Chrome and Brave ask before a site opens Steam; setup.ps1 (run by update.bat) pre-approves csgopremier.com.
 //
 // Data: serverIp / serverPort from /api/match/<id>, the same fields the site builds its command from.
 // The button copies the look of the site's "Copy connect" next to it.

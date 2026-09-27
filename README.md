@@ -60,11 +60,11 @@ Run **`update.bat`** again. It replaces the files in the install folder and repo
 went from and to. Then open `chrome://extensions` and press the **reload arrow** on the extension's
 card — Chrome keeps running the old copy until you do.
 
-After unpacking, `update.bat` runs **`setup.ps1`** from the release. It sets Chrome's
-`AutoLaunchProtocolsFromOrigins` policy for your Windows user (no admin needed), so the **Join game**
-button opens Steam without Chrome's "Open Steam?" prompt. Other entries in that policy are kept, and
-Chrome shows it at `chrome://policy` (and says it's "managed by your organization" while any policy is
-set). To take it out again, run `powershell -ExecutionPolicy Bypass -File setup.ps1 -Remove` in the
+After unpacking, `update.bat` runs **`setup.ps1`** from the release. It sets the
+`AutoLaunchProtocolsFromOrigins` policy for your Windows user (no admin needed) in Chrome and Brave,
+whichever are installed, so the **Join game** button opens Steam without the "Open Steam?" prompt.
+Other entries in that policy are kept, and the browser shows it at `chrome://policy` /
+`brave://policy` (and says it's "managed by your organization" while any policy is set). To take it out again, run `powershell -ExecutionPolicy Bypass -File setup.ps1 -Remove` in the
 install folder. An `update.bat` from before v1.54.0 doesn't run it: download it again from the latest
 release once.
 
