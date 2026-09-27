@@ -222,6 +222,36 @@
     return m ? { kind: m[1] === "crates" ? "case" : "pack", id: decodeURIComponent(m[2]) } : null;
   };
 
+  // The tile's "N left" stock line, so it counts down as the cart reserves stock. The site renders "{n} left"
+  // as two text nodes (the number, then " left"); we rewrite only the number. React's own re-renders put the
+  // real number back, and the render loop re-adjusts it, the same way the cart button is kept in sync.
+  function setLeft(card, n) {
+    const text = String(n);
+    for (const span of card.querySelectorAll("span")) {
+      const kids = span.childNodes;
+      for (let i = 1; i < kids.length; i++) {
+        if (
+          kids[i].nodeType === 3 &&
+          /^\s*left\s*$/i.test(kids[i].textContent) &&
+          kids[i - 1].nodeType === 3 &&
+          /\d/.test(kids[i - 1].textContent)
+        ) {
+          if (kids[i - 1].textContent.trim() !== text) kids[i - 1].textContent = text;
+          return;
+        }
+      }
+      // "{n} left" as a single text node
+      if (kids.length === 1 && kids[0].nodeType === 3) {
+        const m = kids[0].textContent.match(/^(\s*)([\d,]+)(\s+left\s*)$/i);
+        if (m) {
+          const next = `${m[1]}${text}${m[3]}`;
+          if (kids[0].textContent !== next) kids[0].textContent = next;
+          return;
+        }
+      }
+    }
+  }
+
   // The cart button goes beside the tile's own "Buy": its parent becomes a two-column grid (the price row
   // spans both), marked with an attribute that React leaves alone.
   function decorateCards(client) {
@@ -235,6 +265,8 @@
       let maxBtn = host.querySelector(`:scope > .${MAX_CLASS}`);
       const shop = shopEntry(client, item.kind, item.id);
       const inCart = lines.find((l) => l.kind === item.kind && l.id === item.id)?.qty || 0;
+      // Count the tile's "N left" down by what's reserved in the cart (only cases with a stock limit show it).
+      if (shop && shop.entry.stock_remaining != null) setLeft(card, Math.max(0, shop.entry.stock_remaining - inCart));
       const can = !!shop && shop.max > 0 && inCart < shop.max && !buy.disabled;
       if (!btn) {
         btn = document.createElement("button");
