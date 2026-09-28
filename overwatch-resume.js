@@ -137,7 +137,7 @@
   window.addEventListener("blur", () => {
     if (!onReviewPage()) return;
     const video = document.querySelector("video");
-    if (video && !video.paused) video.pause();
+    //if (video && !video.paused) video.pause();
   });
 
   let scheduled = false;

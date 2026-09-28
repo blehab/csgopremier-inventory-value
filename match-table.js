@@ -3,8 +3,9 @@
 // The site's Scoreboard tab is replaced by the two teams side by side (stacked when there isn't room),
 // one short row per player (a coloured bar on the left marks a party, as on the site's table): country flag, avatar, username (opens their profile in a new tab), Steam id
 // (opens steamcommunity.com and steamcommunity.now), a report flag on hover (not on your own row; it opens
-// the site's report form as a small dialog, see "report dialog" below), then rating, K / D / A, +/–, ADR, KAST and HS%. The
-// stat cells are shaded like a heatmap against the whole match, green above the average and red below.
+// the site's report form as a small dialog, see "report dialog" below), then rating, FACEIT level and elo,
+// K / D / A, +/–, ADR, KAST and HS%. The stat cells are shaded like a heatmap against the whole match,
+// green above the average and red below; the FACEIT level is its own coloured badge (see "FACEIT" below).
 // Entry, clutch, multi-kill and utility numbers are in each row's tooltip, and "Full table" brings the
 // site's own table back (remembered). The Heatmaps and Replay tabs are left alone, but the tab strip's
 // stray scrollbars are hidden (see "tab strip" below).
@@ -122,9 +123,41 @@
 
   const STAT_W = 44; // every stat column the same width, so the cells (and their shading) line up evenly
 
-  // key, header, tooltip, value, text, heat (1: higher is better, -1: lower is better, 0: not shaded)
+  // FACEIT's skill levels run 1 (grey) through 10 (red); its badges colour the number, so ours do too.
+  const FACEIT_LEVEL_COLORS = {
+    1: "#c0c0c0",
+    2: "#2fd85e",
+    3: "#2fd85e",
+    4: "#f0c419",
+    5: "#f0c419",
+    6: "#f0c419",
+    7: "#ff9d1e",
+    8: "#ff9d1e",
+    9: "#ff5e1e",
+    10: "#ff2d2d",
+  };
+  const faceitProfile = (nickname) => `https://www.faceit.com/en/players/${encodeURIComponent(nickname)}`;
+
+  // The FACEIT level cell: the number in a badge of its level colour, a link to the player's FACEIT profile.
+  function faceitLevelCell(r) {
+    const f = r.faceit;
+    const lvl = f?.level;
+    if (lvl == null) return `<td class="px-0.5 py-1 text-center font-mono text-white/25">–</td>`;
+    const c = FACEIT_LEVEL_COLORS[lvl] || "#c0c0c0";
+    // Inline box styles (not Tailwind arbitrary classes) so the badge renders regardless of the site's build.
+    const badge = `<span class="font-mono text-[10px] font-bold tabular-nums"
+        style="display:inline-block;min-width:16px;padding:1px 3px;border-radius:2px;line-height:1.15;color:${c};border:1px solid ${c}66;background:${c}1f">${lvl}</span>`;
+    const inner = f.nickname
+      ? `<a href="${escapeHtml(faceitProfile(f.nickname))}" target="_blank" rel="noopener noreferrer" title="FACEIT level ${lvl} · ${escapeHtml(f.nickname)} on FACEIT">${badge}</a>`
+      : `<span title="FACEIT level ${lvl}">${badge}</span>`;
+    return `<td class="px-0.5 py-1 text-center">${inner}</td>`;
+  }
+
+  // key, header, tooltip, value, text, heat (1: higher is better, -1: lower is better, 0: not shaded), cell (custom <td>)
   const COLUMNS = [
     { key: "rating", label: "Rating", title: "Rating", w: 56, get: (r) => r.rating ?? null, fmt: num, heat: 0 },
+    { key: "flevel", label: "Lvl", title: "FACEIT skill level", w: 40, get: (r) => r.faceit?.level ?? null, heat: 0, cell: faceitLevelCell },
+    { key: "felo", label: "Elo", title: "FACEIT elo", w: 52, get: (r) => r.faceit?.elo ?? null, fmt: num, heat: 0 },
     { key: "kills", label: "K", title: "Kills", w: STAT_W, get: (r) => r.s?.kills, heat: 1 },
     { key: "deaths", label: "D", title: "Deaths", w: STAT_W, get: (r) => r.s?.deaths, heat: -1 },
     { key: "assists", label: "A", title: "Assists", w: STAT_W, get: (r) => r.s?.assists, heat: 1 },
@@ -186,6 +219,7 @@
   function rowHtml(r, scales, mvp, matchId, party) {
     const { p } = r;
     const cells = COLUMNS.map((col) => {
+      if (col.cell) return col.cell(r);
       const v = col.get(r);
       const has = v != null && Number.isFinite(+v);
       const t = has && scales[col.key] && !p.didNotJoin ? scales[col.key](v) : null;
@@ -228,7 +262,7 @@
   }
 
   function sortRows(rows) {
-    const col = COLUMNS.find((c) => c.key === sort.key) || COLUMNS[5];
+    const col = COLUMNS.find((c) => c.key === sort.key) || COLUMNS.find((c) => c.key === "adr");
     return [...rows].sort((a, b) => {
       const va = col.get(a);
       const vb = col.get(b);
@@ -278,6 +312,50 @@
       </div>`;
   }
 
+  // ---------- FACEIT ----------
+  // The site's API has no FACEIT data, so each player's level and elo are looked up by Steam id from
+  // FACEIT's public users endpoint. This card runs in the page's own world, where that fetch is blocked
+  // (CORS), so the request goes to faceit-bridge.js — a content script — which relays it to the background
+  // worker (faceit-bg.js) and posts the answer back. Answers are cached per Steam id; a row shows "–"
+  // until its answer arrives (and stays "–" for players with no FACEIT account), then the cards re-draw.
+  const faceitCache = new Map(); // steamId -> { level, elo, nickname } | null
+  const faceitAsked = new Set(); // Steam ids already requested, so each is looked up only once
+  const faceitWaiters = new Map(); // reqId -> resolve
+  let faceitReqId = 0;
+
+  window.addEventListener("message", (e) => {
+    if (e.source !== window || e.origin !== location.origin) return;
+    const res = e.data;
+    if (res == null || res.__cipFaceitRes == null) return;
+    const done = faceitWaiters.get(res.__cipFaceitRes);
+    if (done) {
+      faceitWaiters.delete(res.__cipFaceitRes);
+      done(res.data || {});
+    }
+  });
+
+  function requestFaceit(ids) {
+    return new Promise((resolve) => {
+      const reqId = ++faceitReqId;
+      faceitWaiters.set(reqId, resolve);
+      window.postMessage({ __cipFaceitReq: reqId, ids }, location.origin);
+      setTimeout(() => {
+        if (faceitWaiters.delete(reqId)) resolve({}); // no bridge, or no answer in time
+      }, 12000);
+    });
+  }
+
+  // Look up any Steam ids not asked for yet, then re-draw the cards once their FACEIT data is in.
+  function ensureFaceit(steamIds) {
+    const ids = [...new Set(steamIds.map(String).filter((id) => id && !faceitAsked.has(id)))];
+    if (!ids.length) return;
+    ids.forEach((id) => faceitAsked.add(id));
+    requestFaceit(ids).then((data) => {
+      for (const id of ids) faceitCache.set(id, data[id] ?? null);
+      cards.forEach(show);
+    });
+  }
+
   const BUTTON =
     "border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/45 transition-colors hover:text-white";
 
@@ -297,9 +375,11 @@
     const { match, analysis } = data;
     const rounds = (match.teamAScore || 0) + (match.teamBScore || 0) || analysis?.rounds?.length || 0;
     const analysisById = new Map((analysis?.players || []).map((a) => [String(a.steam_id), a]));
-    const toRows = (players) => (players || []).map((p) => ({ p, rating: p.rating, s: statsFor(p, analysisById, rounds) }));
+    const toRows = (players) =>
+      (players || []).map((p) => ({ p, rating: p.rating, s: statsFor(p, analysisById, rounds), faceit: faceitCache.get(String(p.steamId)) }));
     const a = toRows(match.teamA);
     const b = toRows(match.teamB);
+    ensureFaceit([...(match.teamA || []), ...(match.teamB || [])].map((p) => p.steamId));
     const scales = heatScales([...a, ...b]);
     const mvp = !live && [...a, ...b].filter((r) => r.s?.adr != null && !r.p.didNotJoin).sort((x, y) => y.s.adr - x.s.adr)[0];
     const mvpId = mvp ? String(mvp.p.steamId) : "";
@@ -307,8 +387,8 @@
     const aScore = match.teamAScore ?? 0;
     const bScore = match.teamBScore ?? 0;
     const note = live
-      ? "Live, refreshed every 15 s · shading compares each stat across the match: green above average, red below · KAST and the entry, clutch and utility details come with the demo once the match ends · hover a row for lifetime stats · a coloured bar on the left marks players queued together · click a header to sort."
-      : "Shading compares each stat across the match: green above average, red below · hover a row for entry, clutch, multi-kill and utility · a coloured bar on the left marks players queued together · click a header to sort.";
+      ? "Live, refreshed every 15 s · shading compares each stat across the match: green above average, red below · KAST and the entry, clutch and utility details come with the demo once the match ends · FACEIT level and elo are looked up by Steam id (– when the player has no FACEIT) · hover a row for lifetime stats · a coloured bar on the left marks players queued together · click a header to sort."
+      : "Shading compares each stat across the match: green above average, red below · FACEIT level and elo are looked up by Steam id (– when the player has no FACEIT) · hover a row for entry, clutch, multi-kill and utility · a coloured bar on the left marks players queued together · click a header to sort.";
 
     card.innerHTML = `
       <div class="grid gap-2.5" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,540px),1fr))">

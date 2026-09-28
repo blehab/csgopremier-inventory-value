@@ -92,7 +92,7 @@ jobs:
           fi
           # Every script the manifest declares must be in the archive, or the extension
           # silently loses a feature after an update.
-          node -e 'for (const s of require("./manifest.json").content_scripts) for (const f of s.js) console.log(f)' > declared.txt
+          node -e 'const m=require("./manifest.json"); for (const s of m.content_scripts) for (const f of s.js) console.log(f); if (m.background?.service_worker) console.log(m.background.service_worker)' > declared.txt
           while read -r f; do
             if ! grep -qx "$f" entries.txt; then
               echo "::error::Declared in manifest.json but missing from the zip: $f"

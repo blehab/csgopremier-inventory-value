@@ -4,10 +4,14 @@ A Chrome extension that adds quality-of-life features to [csgopremier.com](https
 It is a plain MV3 extension with no build step and no dependencies — the `.js` files here are both
 the source and what ships.
 
-It declares no permissions and no host permissions, uses no `chrome.*` APIs, and makes no
-cross-origin requests: every fetch is same-origin to `csgopremier.com`, using the session you are
-already signed in with. The one exception is the country flag images, which are plain `<img>` tags
-loaded from `flagcdn.com` (Windows doesn't render flag emoji).
+Almost everything is same-origin to `csgopremier.com`, using the session you are already signed in
+with, and needs no permissions. There are two exceptions. The country flag images are plain `<img>`
+tags loaded from `flagcdn.com` (Windows doesn't render flag emoji). And the match scoreboard shows
+each player's FACEIT level and elo, which the site's API doesn't carry: those are looked up by Steam
+id from FACEIT's public `api.faceit.com` users endpoint. That host isn't reachable from the page
+(CORS), so it's the extension's one use of a background service worker (`faceit-bg.js`), the one
+`host_permissions` entry (`https://api.faceit.com/*`) and the only `chrome.*` API use — the page-world
+scoreboard relays the request through `faceit-bridge.js`.
 
 ## Features
 
@@ -30,7 +34,8 @@ loaded from `flagcdn.com` (Windows doesn't render flag emoji).
 | `ready-check.js` | A less obstructive match ready check, showing who hasn't accepted yet |
 | `auto-accept.js` | Optional auto-accept of the match-found dialog (off by default) |
 | `invite-accept.js` | Optional auto-accept of party (lobby) invites, switched in the site's Settings panel (off by default) |
-| `match-table.js` | A compact scoreboard on match pages: both teams side by side, laid out like the Overwatch card, with heatmap-shaded stats (the site's full table is one click away), and the same table for live matches, refreshed every 15 s |
+| `match-table.js` | A compact scoreboard on match pages: both teams side by side, laid out like the Overwatch card, with heatmap-shaded stats and each player's FACEIT level and elo (the site's full table is one click away), and the same table for live matches, refreshed every 15 s |
+| `faceit-bridge.js`, `faceit-bg.js` | Look up FACEIT level and elo by Steam id for the scoreboard: the page-world card can't reach `api.faceit.com` (CORS), so `faceit-bridge.js` (a content script) relays the ids to the `faceit-bg.js` background worker, which fetches and caches them |
 | `join-game.js` | A "Join game" button beside "Copy connect" on match pages once the server is up: a `steam://run/4465480//+connect <ip>:<port>` link that starts CS:GO (Steam app 4465480) and joins the match server. An **Auto-join** switch under it (off by default; also an "Auto-join Matches" card in the site's Settings panel) does that for you when the join timer reaches the time you set (`mm:ss`), once per match, and not if you already joined or copied the command yourself |
 | `match-card.js` | The Overwatch card's look (header chips, team boxes, player rows), used by the Overwatch page (and for the live match table's panel) |
 | `country-flags.js` | Country flag images next to players in the match scoreboard and the Overwatch card |

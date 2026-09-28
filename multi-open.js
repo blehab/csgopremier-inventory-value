@@ -301,12 +301,20 @@
     let rare = 0;
     let total = 0;
     let priced = 0;
+    let burnTotal = 0;
+    let burnPriced = 0;
     const cards = results
       .map(({ DroppedSkin: s, InventoryItem: item }) => {
         const pp = item?.pp_value ?? prices.get(item?.id) ?? null;
         if (pp != null) {
           total += pp;
           priced++;
+        }
+        // What you'd get for burning this drop instead of keeping it (from the enriched item).
+        const bp = trades.get(item?.id)?.item?.burn_payout;
+        if (typeof bp === "number") {
+          burnTotal += bp;
+          burnPriced++;
         }
         const color = s.rarity_color || RARITY_COLORS[s.rarity] || "#4b69ff";
         const float = typeof item?.float_value === "number" ? item.float_value.toFixed(8) : "";
@@ -345,6 +353,18 @@
       const pct = spent ? Math.round((profit / spent) * 100) : 0;
       const up = profit >= 0;
       const color = up ? "text-quaternary" : "text-primary";
+      // The same sum, but valuing every drop at its burn payout instead of its market value.
+      let burnLine = "";
+      if (burnPriced === results.length) {
+        const burnProfit = burnTotal - spent;
+        const burnPct = spent ? Math.round((burnProfit / spent) * 100) : 0;
+        const burnUp = burnProfit >= 0;
+        const burnColor = burnUp ? "text-quaternary" : "text-primary";
+        burnLine = `
+          <span class="text-white/45">Burned <span class="font-bold tabular-nums text-tertiary">${fmtPP(burnTotal)}</span> PP</span>
+          <span class="font-bold ${burnColor}">${burnUp ? "Profit" : "Loss"} if burned ${burnUp ? "+" : "−"}${fmtPP(Math.abs(burnProfit))} PP
+            <span class="font-mono text-[10px]">(${burnUp ? "+" : "−"}${Math.abs(burnPct)}%)</span></span>`;
+      }
       profitLine = `
         <div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 border border-white/[0.07] bg-black/25 px-3 py-2 text-[11px]">
           <span class="text-white/45">${results.length} × <span class="tabular-nums text-white/70">${fmtPP(cost)}</span> PP
@@ -352,6 +372,7 @@
           <span class="text-white/45">Drops <span class="font-bold tabular-nums text-white">${fmtPP(total)}</span> PP</span>
           <span class="font-bold ${color}">${up ? "Profit" : "Loss"} ${up ? "+" : "−"}${fmtPP(Math.abs(profit))} PP
             <span class="font-mono text-[10px]">(${up ? "+" : "−"}${Math.abs(pct)}%)</span></span>
+          ${burnLine}
         </div>`;
     }
     return `
