@@ -44,8 +44,14 @@ async function lookup(steamId) {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type !== "cip-faceit" || !Array.isArray(msg.ids)) return;
-  Promise.all(msg.ids.map((id) => lookup(String(id)).then((v) => [String(id), v ?? null])))
-    .then((entries) => sendResponse({ ok: true, data: Object.fromEntries(entries) }))
+  Promise.all(msg.ids.map((id) => lookup(String(id)).then((v) => ({ id: String(id), v }))))
+    .then((results) => {
+      // A found id maps to its data, a "no FACEIT account" id to null; an id whose lookup errored
+      // is left out entirely (v === undefined), so the page keeps it pending and retries it later.
+      const data = {};
+      for (const { id, v } of results) if (v !== undefined) data[id] = v;
+      sendResponse({ ok: true, data });
+    })
     .catch(() => sendResponse({ ok: false }));
   return true; // keep the message channel open for the async reply
 });

@@ -341,18 +341,38 @@
       window.postMessage({ __cipFaceitReq: reqId, ids }, location.origin);
       setTimeout(() => {
         if (faceitWaiters.delete(reqId)) resolve({}); // no bridge, or no answer in time
-      }, 12000);
+      }, 8000);
     });
   }
 
+  let faceitRetry = 0; // caps the retries below so a persistent failure can't spin
+
   // Look up any Steam ids not asked for yet, then re-draw the cards once their FACEIT data is in.
+  // The worker answers with each id's data, null for a player with no FACEIT account, or nothing at all
+  // when the lookup failed (a cold service worker just after an extension reload, or a network blip):
+  // those ids are dropped back out of "asked" and a re-draw is scheduled with a growing delay, so they
+  // are tried again instead of being stuck on "–" until the page is reloaded.
   function ensureFaceit(steamIds) {
     const ids = [...new Set(steamIds.map(String).filter((id) => id && !faceitAsked.has(id)))];
     if (!ids.length) return;
     ids.forEach((id) => faceitAsked.add(id));
     requestFaceit(ids).then((data) => {
-      for (const id of ids) faceitCache.set(id, data[id] ?? null);
-      cards.forEach(show);
+      let got = false;
+      let missed = false;
+      for (const id of ids) {
+        if (Object.prototype.hasOwnProperty.call(data, id)) {
+          faceitCache.set(id, data[id]); // found, or null for no FACEIT account — settled either way
+          got = true;
+        } else {
+          faceitAsked.delete(id); // lookup failed: leave it unsettled so a later pass retries it
+          missed = true;
+        }
+      }
+      if (got) cards.forEach(show);
+      if (missed && faceitRetry < 6) {
+        faceitRetry++;
+        setTimeout(() => cards.forEach(show), 2000 * faceitRetry); // re-draw → ensureFaceit retries the misses
+      }
     });
   }
 
