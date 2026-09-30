@@ -10,21 +10,22 @@
 //   ctrl/cmd-click a card       → select mode on, that card selected
 //   shift-click                 → select the run between the last clicked card and this one
 //   right-click a selected card → a menu for the whole selection
-// Quick-Sell and Burn press the site's own buttons, so their checks and confirmations stay the site's.
-// Sell to Market is ours: POST /api/market/quote-sell-bulk (25 items at a time) for the offers, our own
-// dialog to confirm them, then POST /api/market/execute per accepted offer, exactly as the site's
-// single-item sale does. Nothing is sold until that dialog is confirmed.
+// The three sale actions each have their own dialog and confirmation, and nothing happens until it's
+// confirmed:
+//   Sell to Market → POST /api/market/quote-sell-bulk (25 at a time) for offers, then /api/market/execute.
+//   Quick-Sell     → POST /api/inventory/sell-bulk  ({ item_ids, idempotency_key }) at the site's fixed rate.
+//   Burn           → POST /api/inventory/burn-bulk  ({ item_ids, idempotency_key }) for the burn payout.
+// Quick-Sell and Burn used to just press the site's own bulk button, but that dialog re-derived its
+// "New Balance" line from the live balance and appeared to count up while the items were processed one
+// by one. We call the bulk endpoints ourselves and update the balance once, after every item is done.
 //
 // Runs in the page's MAIN world, because the store is only reachable through React's fiber tree.
 (() => {
   const MENU_ID = "cip-bulk-menu";
   const DIALOG_ID = "cip-bulk-sell";
   const CARD_SELECTOR = "div.grid.grid-cols-2 > article";
-  // The site's buttons in the selection bar, by label ("Sell 3 items", "Delete 1 item"). Anchored so the
-  // single-item menu's own "Sell to Market" / "Delete Item" entries can't match.
-  const SELL_LABEL = /^sell(\s+\d+)?\s+items?$/i;
-  const BURN_LABEL = /^delete(\s+\d+)?\s+items?$/i;
-  const QUOTE_BATCH = 25; // the endpoint's limit
+  const QUOTE_BATCH = 25; // /api/market/quote-sell-bulk's limit
+  const INV_BATCH = 25; // items per /api/inventory/{sell,burn}-bulk call; keep it modest, the cap is unknown
 
   const fiberOf = (el) => el && el[Object.keys(el).find((k) => k.startsWith("__reactFiber"))];
   const onInventory = () => location.pathname === "/inventory";
@@ -64,8 +65,6 @@
     }
     return null;
   }
-
-  const siteButton = (label) => [...document.querySelectorAll("button")].find((b) => label.test(b.textContent.trim()));
 
   async function apiPost(path, body) {
     const csrf = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/)?.[1];
@@ -124,6 +123,14 @@
     );
   }
 
+  // Quick-Sell and Burn are the site's own instant actions (no Market quote): the item itself carries a
+  // fixed quick-sell rate and a burn payout. sell_locked items can't be either; a non-empty
+  // quick_sell_reason means the site won't quick-sell that one.
+  const sellCandidate = (item) => !item.sell_locked && (item.quick_sell_percentage || 0) > 0 && !item.quick_sell_reason;
+  const quickSellAmount = (item) => Math.round((item.pp_value || 0) * (item.quick_sell_percentage || 0));
+  const burnCandidate = (item) => !item.sell_locked;
+  const burnAmount = (item) => item.burn_payout || 0;
+
   // ---------- menu ----------
 
   const closeMenu = () => document.getElementById(MENU_ID)?.remove();
@@ -142,6 +149,8 @@
     const count = state.selectedIds?.size || 0;
     const total = state.filteredItems().length;
     const marketable = selectedItems(state).filter(marketCandidate).length;
+    const sellable = selectedItems(state).filter(sellCandidate).length;
+    const burnable = selectedItems(state).filter(burnCandidate).length;
     const menu = document.createElement("div");
     menu.id = MENU_ID;
     menu.className =
@@ -153,8 +162,8 @@
       `<p class="px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-widest text-secondary">${count} selected</p>` +
       `<div class="my-1 h-px bg-white/[0.07]"></div>` +
       menuItem("market", "Sell to Market", marketable ? String(marketable) : "none", !marketable) +
-      menuItem("quick", "Quick-Sell", "", !count) +
-      menuItem("burn", "Burn", "", !count) +
+      menuItem("quick", "Quick-Sell", sellable ? String(sellable) : "none", !sellable) +
+      menuItem("burn", "Burn", burnable ? String(burnable) : "none", !burnable) +
       `<div class="my-1 h-px bg-white/[0.07]"></div>` +
       menuItem("all", "Select all", String(total), !total) +
       menuItem("clear", "Clear selection", "", !count) +
@@ -173,10 +182,7 @@
       const s = getState();
       if (!s) return;
       if (act === "quick" || act === "burn") {
-        // The site's own dialog does the rest: eligibility, totals and the confirmation.
-        const button = siteButton(act === "quick" ? SELL_LABEL : BURN_LABEL);
-        if (button) button.click();
-        else console.warn("[CSGOPremier bulk] the site's bulk button wasn't found");
+        runBulk(act === "quick" ? "sell" : "burn", selectedItems(s));
       } else if (act === "market") {
         sellOnMarket(s);
       } else if (act === "all") {
@@ -224,9 +230,9 @@
     return el;
   }
 
-  const dialogHeader = (status) =>
+  const dialogHeader = (status, title = "Sell to Market") =>
     `<div class="flex items-center justify-between border-b border-white/5 bg-primary/[0.035] px-4 py-2.5 font-mono text-[9px] uppercase tracking-widest">
-       <div class="flex items-center gap-2 font-bold text-white/70"><span class="h-1.5 w-1.5 bg-primary"></span>Sell to Market</div>
+       <div class="flex items-center gap-2 font-bold text-white/70"><span class="h-1.5 w-1.5 bg-primary"></span>${escapeHtml(title)}</div>
        <span class="font-bold text-primary">${escapeHtml(status)}</span>
      </div>`;
 
@@ -414,6 +420,155 @@
                    .join("")}</ul>`
                : ""
            }
+           <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Done</button></div>
+         </div>`
+    ).addEventListener("click", (e) => e.target.closest('[data-act="close"]') && closeDialog());
+  }
+
+  // ---------- quick-sell / burn (the site's instant actions, in bulk) ----------
+
+  // The site's Tailwind build only ships the colour utilities it uses itself, so red ones like
+  // bg-rose-500/15 / text-rose-200 render as transparent/white here. Burn's danger accent gets its own
+  // stylesheet, injected once, instead.
+  function ensureBulkStyle() {
+    if (document.getElementById("cip-bulk-style")) return;
+    const style = document.createElement("style");
+    style.id = "cip-bulk-style";
+    style.textContent =
+      ".cip-burn-btn{border-color:rgba(251,113,133,0.45);background:rgba(244,63,94,0.16);color:#fecdd3}" +
+      ".cip-burn-btn:hover{background:rgba(244,63,94,0.28)}" +
+      ".cip-danger-note{color:rgba(253,164,175,0.85)}";
+    document.head.appendChild(style);
+  }
+
+  const bulkConfig = (kind) =>
+    kind === "burn"
+      ? { title: "Burn", verb: "Burn", gerund: "Burning", past: "Burned", path: "/api/inventory/burn-bulk",
+          candidate: burnCandidate, amount: burnAmount, danger: true,
+          warn: "Burning is permanent — these items leave your inventory forever." }
+      : { title: "Quick-Sell", verb: "Quick-Sell", gerund: "Selling", past: "Sold", path: "/api/inventory/sell-bulk",
+          candidate: sellCandidate, amount: quickSellAmount, danger: false,
+          warn: "Quick-selling is permanent and pays the site's fixed rate, not the Market price." };
+
+  function noneEligible(cfg, kind) {
+    dialogShell(
+      dialogHeader("Nothing eligible", cfg.title) +
+        `<div class="px-5 py-5">
+           <p class="text-sm text-white/70">None of the selected items can be ${kind === "burn" ? "burned" : "quick-sold"}.</p>
+           <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Close</button></div>
+         </div>`
+    ).addEventListener("click", (e) => e.target.closest('[data-act="close"]') && closeDialog());
+  }
+
+  function runBulk(kind, chosen, { refresh = true } = {}) {
+    ensureBulkStyle();
+    const cfg = bulkConfig(kind);
+    const eligible = chosen.filter(cfg.candidate);
+    const skipped = chosen.length - eligible.length;
+    if (!eligible.length) return noneEligible(cfg, kind);
+
+    const total = eligible.reduce((s, i) => s + cfg.amount(i), 0);
+    const rows = eligible
+      .map(
+        (it, i) => `
+        <li class="flex items-center justify-between gap-3 border-t border-white/[0.05] px-4 py-2 text-xs">
+          <span class="flex min-w-0 items-center gap-2">
+            <span class="w-5 shrink-0 font-mono text-[10px] text-white/30">${i + 1}</span>
+            <span class="truncate text-white/80">${escapeHtml(it.skin?.name || "Item")}</span>
+          </span>
+          <span class="shrink-0 font-bold tabular-nums text-white">+${fmtPP(cfg.amount(it))}<span class="ml-1 text-[10px] italic font-bold text-secondary">PP</span></span>
+        </li>`
+      )
+      .join("");
+
+    const note = skipped ? `${skipped} ${skipped === 1 ? "item isn't" : "items aren't"} eligible and will be left alone.` : "";
+
+    const el = dialogShell(
+      dialogHeader(`${eligible.length} ${eligible.length === 1 ? "item" : "items"}`, cfg.title) +
+        `<ul class="overflow-y-auto" style="max-height:46vh">${rows}</ul>
+         <div class="border-t border-white/[0.07] px-4 py-3">
+           <div class="flex items-center justify-between text-sm">
+             <span class="text-white/55">You receive</span>
+             <span class="font-bold tabular-nums text-white">+${fmtPP(total)}<span class="ml-1 text-[10px] italic font-bold text-secondary">PP</span></span>
+           </div>
+           ${note ? `<p class="mt-2 text-[11px] leading-4 text-white/35">${note}</p>` : ""}
+           <p class="mt-2 text-[11px] leading-4 ${cfg.danger ? "cip-danger-note" : "text-white/35"}">${cfg.warn}</p>
+           <div class="mt-4 flex items-center justify-end gap-2">
+             <button type="button" data-act="cancel" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Cancel</button>
+             <button type="button" data-act="confirm" class="border px-5 py-2 text-xs font-bold uppercase tracking-wider ${
+               cfg.danger ? "cip-burn-btn" : "border-primary/40 bg-primary/15 text-primary hover:bg-primary/25"
+             }">${cfg.verb} · ${eligible.length}</button>
+           </div>
+         </div>`
+    );
+
+    el.addEventListener("click", (e) => {
+      if (e.target.closest('[data-act="cancel"]')) closeDialog();
+      else if (e.target.closest('[data-act="confirm"]')) executeBulk(kind, eligible, refresh);
+    });
+  }
+
+  async function executeBulk(kind, eligible, refresh) {
+    const cfg = bulkConfig(kind);
+    const ids = eligible.map((i) => i.id);
+    const earned = eligible.reduce((s, i) => s + cfg.amount(i), 0);
+
+    dialogShell(
+      dialogHeader(cfg.gerund, cfg.title) +
+        `<div class="flex items-center gap-3 px-5 py-6">
+           <span class="h-4 w-4 animate-spin rounded-full border-2 border-primary/30 border-t-primary"></span>
+           <p class="text-sm text-white/70">${cfg.gerund} ${ids.length} ${ids.length === 1 ? "item" : "items"}…</p>
+         </div>`,
+      { busy: true }
+    );
+
+    let done = 0;
+    let balance;
+    let failed = 0;
+    try {
+      // One or more bulk calls, but the balance is only touched once, after the last one — so the header
+      // never ticks up per item the way the site's own dialog did.
+      for (let i = 0; i < ids.length; i += INV_BATCH) {
+        const batch = ids.slice(i, i + INV_BATCH);
+        const res = await apiPost(cfg.path, { item_ids: batch, idempotency_key: crypto.randomUUID() });
+        done += res?.sold_count ?? res?.burned_count ?? res?.count ?? batch.length;
+        const b = res?.balance_pp ?? res?.balance ?? res?.pp_balance;
+        if (typeof b === "number") balance = b;
+        if (Array.isArray(res?.failed)) failed += res.failed.length;
+        if (i + INV_BATCH < ids.length) await new Promise((r) => setTimeout(r, 400));
+      }
+    } catch (e) {
+      // Something may already have gone through, so refresh the inventory before reporting.
+      const client = findQueryClient();
+      for (const key of ["inventory", "pp-balance"]) client?.invalidateQueries({ queryKey: [key] });
+      getState()?.exitSelectMode();
+      lastClickedId = null;
+      dialogShell(
+        dialogHeader("Failed", cfg.title) +
+          `<div class="px-5 py-5">
+             <p class="text-sm text-white/70">${escapeHtml(cfg.title)} failed: ${escapeHtml(e.message)}</p>
+             <p class="mt-2 text-[11px] leading-4 text-white/40">Some items may already have been processed — check your inventory.</p>
+             <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Close</button></div>
+           </div>`
+      ).addEventListener("click", (ev) => ev.target.closest('[data-act="close"]') && closeDialog());
+      return;
+    }
+
+    if (refresh) {
+      const client = findQueryClient();
+      if (typeof balance === "number") client?.setQueryData(["pp-balance"], (old) => (old ? { ...old, balance } : old));
+      for (const key of ["inventory", "pp-balance", "market-stock", "my-stickers"]) client?.invalidateQueries({ queryKey: [key] });
+      getState()?.exitSelectMode();
+      lastClickedId = null;
+    }
+
+    dialogShell(
+      dialogHeader(cfg.past, cfg.title) +
+        `<div class="px-5 py-5">
+           <p class="text-sm text-white/80">${cfg.past} ${done} ${done === 1 ? "item" : "items"}${
+             failed ? "" : ` for <span class="font-bold tabular-nums text-white">+${fmtPP(earned)}</span><span class="ml-0.5 text-[10px] italic font-bold text-secondary">PP</span>`
+           }.</p>
+           ${failed ? `<p class="mt-2 text-[11px] leading-4 text-white/45">${failed} ${failed === 1 ? "item" : "items"} couldn't be processed.</p>` : ""}
            <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Done</button></div>
          </div>`
     ).addEventListener("click", (e) => e.target.closest('[data-act="close"]') && closeDialog());
