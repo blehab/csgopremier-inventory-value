@@ -5,7 +5,7 @@
 // (opens steamcommunity.com and steamcommunity.now), a report flag on hover (not on your own row; it opens
 // the site's report form as a small dialog, see "report dialog" below), then rating, FACEIT level and elo,
 // K / D / A, +/–, ADR, KAST and HS%. The stat cells are shaded like a heatmap against the whole match,
-// green above the average and red below; the FACEIT level is its own coloured badge (see "FACEIT" below).
+// green above the average and red below; the FACEIT level is its own coloured badge (from faceit-client.js).
 // Entry, clutch, multi-kill and utility numbers are in each row's tooltip, and "Full table" brings the
 // site's own table back (remembered). The Heatmaps and Replay tabs are left alone, but the tab strip's
 // stray scrollbars are hidden (see "tab strip" below).
@@ -123,34 +123,13 @@
 
   const STAT_W = 44; // every stat column the same width, so the cells (and their shading) line up evenly
 
-  // FACEIT's skill levels run 1 (grey) through 10 (red); its badges colour the number, so ours do too.
-  const FACEIT_LEVEL_COLORS = {
-    1: "#c0c0c0",
-    2: "#2fd85e",
-    3: "#2fd85e",
-    4: "#f0c419",
-    5: "#f0c419",
-    6: "#f0c419",
-    7: "#ff9d1e",
-    8: "#ff9d1e",
-    9: "#ff5e1e",
-    10: "#ff2d2d",
-  };
-  const faceitProfile = (nickname) => `https://www.faceit.com/en/players/${encodeURIComponent(nickname)}`;
-
-  // The FACEIT level cell: the number in a badge of its level colour, a link to the player's FACEIT profile.
+  // The FACEIT level cell: the coloured level badge (from the shared client, see faceit-client.js),
+  // centred; "–" until the lookup settles or when the player has no FACEIT account.
   function faceitLevelCell(r) {
-    const f = r.faceit;
-    const lvl = f?.level;
-    if (lvl == null) return `<td class="px-0.5 py-1 text-center font-mono text-white/25">–</td>`;
-    const c = FACEIT_LEVEL_COLORS[lvl] || "#c0c0c0";
-    // Inline box styles (not Tailwind arbitrary classes) so the badge renders regardless of the site's build.
-    const badge = `<span class="font-mono text-[10px] font-bold tabular-nums"
-        style="display:inline-block;min-width:16px;padding:1px 3px;border-radius:2px;line-height:1.15;color:${c};border:1px solid ${c}66;background:${c}1f">${lvl}</span>`;
-    const inner = f.nickname
-      ? `<a href="${escapeHtml(faceitProfile(f.nickname))}" target="_blank" rel="noopener noreferrer" title="FACEIT level ${lvl} · ${escapeHtml(f.nickname)} on FACEIT">${badge}</a>`
-      : `<span title="FACEIT level ${lvl}">${badge}</span>`;
-    return `<td class="px-0.5 py-1 text-center">${inner}</td>`;
+    const inner = window.__cipFaceit?.badgeHtml(r.faceit) || "";
+    return inner
+      ? `<td class="px-0.5 py-1 text-center">${inner}</td>`
+      : `<td class="px-0.5 py-1 text-center font-mono text-white/25">–</td>`;
   }
 
   // key, header, tooltip, value, text, heat (1: higher is better, -1: lower is better, 0: not shaded), cell (custom <td>)
@@ -312,69 +291,10 @@
       </div>`;
   }
 
-  // ---------- FACEIT ----------
-  // The site's API has no FACEIT data, so each player's level and elo are looked up by Steam id from
-  // FACEIT's public users endpoint. This card runs in the page's own world, where that fetch is blocked
-  // (CORS), so the request goes to faceit-bridge.js — a content script — which relays it to the background
-  // worker (faceit-bg.js) and posts the answer back. Answers are cached per Steam id; a row shows "–"
-  // until its answer arrives (and stays "–" for players with no FACEIT account), then the cards re-draw.
-  const faceitCache = new Map(); // steamId -> { level, elo, nickname } | null
-  const faceitAsked = new Set(); // Steam ids already requested, so each is looked up only once
-  const faceitWaiters = new Map(); // reqId -> resolve
-  let faceitReqId = 0;
-
-  window.addEventListener("message", (e) => {
-    if (e.source !== window || e.origin !== location.origin) return;
-    const res = e.data;
-    if (res == null || res.__cipFaceitRes == null) return;
-    const done = faceitWaiters.get(res.__cipFaceitRes);
-    if (done) {
-      faceitWaiters.delete(res.__cipFaceitRes);
-      done(res.data || {});
-    }
-  });
-
-  function requestFaceit(ids) {
-    return new Promise((resolve) => {
-      const reqId = ++faceitReqId;
-      faceitWaiters.set(reqId, resolve);
-      window.postMessage({ __cipFaceitReq: reqId, ids }, location.origin);
-      setTimeout(() => {
-        if (faceitWaiters.delete(reqId)) resolve({}); // no bridge, or no answer in time
-      }, 8000);
-    });
-  }
-
-  let faceitRetry = 0; // caps the retries below so a persistent failure can't spin
-
-  // Look up any Steam ids not asked for yet, then re-draw the cards once their FACEIT data is in.
-  // The worker answers with each id's data, null for a player with no FACEIT account, or nothing at all
-  // when the lookup failed (a cold service worker just after an extension reload, or a network blip):
-  // those ids are dropped back out of "asked" and a re-draw is scheduled with a growing delay, so they
-  // are tried again instead of being stuck on "–" until the page is reloaded.
-  function ensureFaceit(steamIds) {
-    const ids = [...new Set(steamIds.map(String).filter((id) => id && !faceitAsked.has(id)))];
-    if (!ids.length) return;
-    ids.forEach((id) => faceitAsked.add(id));
-    requestFaceit(ids).then((data) => {
-      let got = false;
-      let missed = false;
-      for (const id of ids) {
-        if (Object.prototype.hasOwnProperty.call(data, id)) {
-          faceitCache.set(id, data[id]); // found, or null for no FACEIT account — settled either way
-          got = true;
-        } else {
-          faceitAsked.delete(id); // lookup failed: leave it unsettled so a later pass retries it
-          missed = true;
-        }
-      }
-      if (got) cards.forEach(show);
-      if (missed && faceitRetry < 6) {
-        faceitRetry++;
-        setTimeout(() => cards.forEach(show), 2000 * faceitRetry); // re-draw → ensureFaceit retries the misses
-      }
-    });
-  }
+  // FACEIT level and elo are looked up by Steam id through the shared page-world client (faceit-client.js),
+  // which relays the request to the background worker and caches the answers; ensure re-draws the cards
+  // once data arrives (and retries any lookups that failed). A row shows "–" until its answer settles.
+  const ensureFaceit = (steamIds) => window.__cipFaceit?.ensure(steamIds, () => cards.forEach(show));
 
   const BUTTON =
     "border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/45 transition-colors hover:text-white";
@@ -396,7 +316,7 @@
     const rounds = (match.teamAScore || 0) + (match.teamBScore || 0) || analysis?.rounds?.length || 0;
     const analysisById = new Map((analysis?.players || []).map((a) => [String(a.steam_id), a]));
     const toRows = (players) =>
-      (players || []).map((p) => ({ p, rating: p.rating, s: statsFor(p, analysisById, rounds), faceit: faceitCache.get(String(p.steamId)) }));
+      (players || []).map((p) => ({ p, rating: p.rating, s: statsFor(p, analysisById, rounds), faceit: window.__cipFaceit?.get(p.steamId) }));
     const a = toRows(match.teamA);
     const b = toRows(match.teamB);
     ensureFaceit([...(match.teamA || []), ...(match.teamB || [])].map((p) => p.steamId));

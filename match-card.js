@@ -152,11 +152,21 @@
       </div>`;
   }
 
-  // The Overwatch card's columns: rating, then K, D, A and ADR from the match itself.
+  // The Overwatch card's columns: rating, FACEIT level and elo, then K, D, A and ADR from the match
+  // itself. FACEIT data isn't on the player object — it's looked up by Steam id through the shared
+  // client (faceit-client.js), so the level/elo cells read window.__cipFaceit; overwatch-info.js kicks
+  // off the lookup and re-draws once it settles. A cell shows "–" until then (or with no FACEIT account).
   function statColumns(data) {
     const rounds = (data.teamAScore || 0) + (data.teamBScore || 0);
+    const faceitOf = (p) => window.__cipFaceit?.get(p.steamId);
     return [
       { label: "Rating", w: "w-14", get: (p) => (p.rating ? num(p.rating) : null) },
+      {
+        label: "Lvl",
+        w: "w-9",
+        html: (p) => window.__cipFaceit?.badgeHtml(faceitOf(p)) || `<span class="font-mono text-white/25">–</span>`,
+      },
+      { label: "Elo", w: "w-12", get: (p) => (faceitOf(p)?.elo != null ? num(faceitOf(p).elo) : null) },
       { label: "K", w: "w-7", get: (p) => p.stats?.kills },
       { label: "D", w: "w-7", get: (p) => p.stats?.deaths },
       { label: "A", w: "w-7", get: (p) => p.stats?.assists },

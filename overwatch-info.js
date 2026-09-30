@@ -126,6 +126,18 @@
     card.innerHTML = headerHtml(ids, data, suspect) + body;
     window.__cipCountry?.fillFlags(card); // country-flags.js
     applyOpen(card);
+
+    // The FACEIT level/elo columns are filled by the shared client (faceit-client.js): look up every
+    // player by Steam id, then re-draw this card once the data settles (ensure only re-fires while
+    // there's new data or a retry, so this doesn't loop). Guarded by the card's key so a clip that
+    // has since changed doesn't get redrawn with the old match.
+    if (state === "ready" && data) {
+      const key = `${ids.matchId}_${ids.steamId}`;
+      const steamIds = [...(data.teamA || []), ...(data.teamB || [])].map((p) => p.steamId);
+      window.__cipFaceit?.ensure(steamIds, () => {
+        if (card.dataset.key === key) render(card, ids, "ready", data);
+      });
+    }
   }
 
   function update() {
