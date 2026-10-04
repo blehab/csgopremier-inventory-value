@@ -195,8 +195,77 @@
     return colors;
   }
 
+  // ---------- cheating bans ----------
+  // A red "BAN" badge beside the name marks a player with an active Cheating ban. The match API carries no
+  // ban info, so each player is looked up once by username (/api/users/<name>, the same endpoint the report
+  // dialog uses) and the result cached for the session: the ISO date an active ban whose reason is "Cheating"
+  // runs until, or null when there's none. A failed lookup is left unasked so the next draw retries it, and
+  // ensure() re-draws the cards once answers arrive.
+  const banCache = new Map(); // username → banned_until (ISO) | null (no cheating ban)
+  const banAsked = new Set(); // usernames with a lookup in flight or settled
+
+  const cheatingBanUntil = (data) => {
+    const b = (data?.activeBans || []).find((x) => String(x.reason || "").toLowerCase().includes("cheat"));
+    return b ? b.banned_until || null : null;
+  };
+
+  function ensureBans(usernames, onReady) {
+    const todo = [...new Set(usernames.filter((u) => u && !banAsked.has(u)))];
+    if (!todo.length) return;
+    todo.forEach((u) => banAsked.add(u));
+    Promise.all(
+      todo.map((u) =>
+        getJson(`/api/users/${encodeURIComponent(u)}`).then(
+          (d) => banCache.set(u, cheatingBanUntil(d)),
+          () => banAsked.delete(u) // failed: let the next draw try again
+        )
+      )
+    ).then(onReady);
+  }
+
+  const banDate = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(+d) ? "" : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  };
+
+  // The MVP and BAN badges carry a small styled tooltip (not the browser's plain title box) in the site's own
+  // idiom: a dark panel with a monospace uppercase label, the site's left inset accent bar and "·" separator,
+  // tinted per badge through the --cip-tip-accent custom property. Injected once.
+  function ensureTipStyle() {
+    if (document.getElementById("cip-badge-tip-style")) return;
+    const style = document.createElement("style");
+    style.id = "cip-badge-tip-style";
+    style.textContent = `
+      .cip-tip-host { position: relative; }
+      .cip-tip {
+        position: absolute; left: 50%; bottom: calc(100% + 7px); z-index: 60;
+        display: flex; align-items: center; gap: 6px; white-space: nowrap;
+        padding: 5px 9px 5px 11px;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 9px; font-weight: 700; line-height: 1; letter-spacing: 0.08em; text-transform: uppercase;
+        color: rgba(255,255,255,0.55);
+        background: rgba(13,13,18,0.98);
+        border: 1px solid color-mix(in srgb, var(--cip-tip-accent, #fff) 45%, transparent);
+        box-shadow: inset 3px 0 0 var(--cip-tip-accent, #fff), 0 10px 28px rgba(0,0,0,0.55);
+        opacity: 0; visibility: hidden; pointer-events: none;
+        transform: translateX(-50%) translateY(3px);
+        transition: opacity 0.12s ease, transform 0.12s ease;
+      }
+      .cip-tip-host:hover .cip-tip, .cip-tip-host:focus-visible .cip-tip {
+        opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
+      }
+      .cip-tip::after {
+        content: ""; position: absolute; top: 100%; left: 50%; margin-top: -1px;
+        transform: translateX(-50%); border: 5px solid transparent; border-top-color: rgba(13,13,18,0.98);
+      }
+      .cip-tip-key { color: var(--cip-tip-accent, #fff); }
+      .cip-tip-sep { color: rgba(255,255,255,0.22); }`;
+    document.head.appendChild(style);
+  }
+
   function rowHtml(r, scales, mvp, matchId, party) {
     const { p } = r;
+    const banUntil = banCache.get(p.username);
     const cells = COLUMNS.map((col) => {
       if (col.cell) return col.cell(r);
       const v = col.get(r);
@@ -224,7 +293,12 @@
                title="${ID_TITLE}">(${escapeHtml(p.steamId)})</a>
             ${
               mvp
-                ? `<span class="shrink-0 border border-primary/30 bg-primary/10 px-1 py-px text-[8px] font-bold uppercase tracking-wider text-primary" title="Match MVP (top ADR)">MVP</span>`
+                ? `<span class="cip-tip-host shrink-0 border border-amber-400/40 bg-amber-400/10 px-1 py-px text-[8px] font-bold uppercase tracking-wider text-amber-400" style="--cip-tip-accent:#fbbf24" title="">MVP<span class="cip-tip" role="tooltip"><span class="cip-tip-key">Match MVP</span><span class="cip-tip-sep">·</span>Top ADR</span></span>`
+                : ""
+            }
+            ${
+              banUntil
+                ? `<span class="cip-tip-host shrink-0 border border-red-500/50 bg-red-500/15 px-1 py-px text-[8px] font-bold uppercase tracking-wider text-red-400" style="--cip-tip-accent:#f87171" title="">BAN<span class="cip-tip" role="tooltip"><span class="cip-tip-key">Cheating</span><span class="cip-tip-sep">·</span>Until ${escapeHtml(banDate(banUntil))}</span></span>`
                 : ""
             }
             ${p.didNotJoin ? `<span class="shrink-0 border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/45">No show</span>` : ""}
@@ -312,6 +386,7 @@
       card.innerHTML = `<div class="flex justify-end"><button type="button" class="cip-mt-view ${BUTTON}" title="Switch back to the compact scoreboard">Compact view</button></div>`;
       return;
     }
+    ensureTipStyle();
     const { match, analysis } = data;
     const rounds = (match.teamAScore || 0) + (match.teamBScore || 0) || analysis?.rounds?.length || 0;
     const analysisById = new Map((analysis?.players || []).map((a) => [String(a.steam_id), a]));
@@ -320,6 +395,7 @@
     const a = toRows(match.teamA);
     const b = toRows(match.teamB);
     ensureFaceit([...(match.teamA || []), ...(match.teamB || [])].map((p) => p.steamId));
+    ensureBans([...(match.teamA || []), ...(match.teamB || [])].map((p) => p.username), () => cards.forEach(show));
     const scales = heatScales([...a, ...b]);
     const mvp = !live && [...a, ...b].filter((r) => r.s?.adr != null && !r.p.didNotJoin).sort((x, y) => y.s.adr - x.s.adr)[0];
     const mvpId = mvp ? String(mvp.p.steamId) : "";
