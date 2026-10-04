@@ -225,11 +225,11 @@
     render();
   }
 
-  // Fill the cart with cases so the balance ends as close to 0 as possible, keeping whatever's already in
-  // the cart (its cost is spent first). Draws on every in-stock case in the shop: with many price points it
-  // can land nearer to 0 than a single case would. Greedy, largest-fitting case first — since the shop has a
-  // cheap case, the leftover ends under that cheapest case's price (or, if stock runs out, under what's left
-  // to add). Packs are left alone, and the cart's "never past the wallet" rule holds (it only spends `spare`).
+  // Fill the cart from the cheapest in-stock case upward, keeping whatever's already in the cart (its cost is
+  // spent first). Takes as many of the cheapest case as the balance and its stock allow, then moves to the
+  // next cheapest, and so on — so the cart favours cheap cases and only reaches dearer ones once the cheaper
+  // ones are maxed out or unaffordable. The leftover ends under the price of the cheapest case still in stock.
+  // Packs are left alone, and the cart's "never past the wallet" rule holds (it only spends `spare`).
   function autoFill() {
     if (busy) return;
     const client = findQueryClient();
@@ -262,8 +262,9 @@
     if (minPrice > spare)
       return notify("Auto-fill", `The cheapest case is ${num(minPrice)} PP, more than the ${num(spare)} PP left after the cart.`);
 
-    // Largest-fitting case first: take as many of the dearest as fit, then the next, down to the cheapest.
-    cand.sort((a, b) => b.price - a.price);
+    // Cheapest first: take as many of the cheapest case as fit (up to its stock), then move up to dearer
+    // cases only once a cheaper one is maxed out or the balance can't afford another of it.
+    cand.sort((a, b) => a.price - b.price);
     let left = spare;
     for (const c of cand) {
       const n = Math.min(c.room, Math.floor(left / c.price));
@@ -288,12 +289,15 @@
     render();
 
     const allMaxed = cand.every((c) => c.add === c.room);
+    // The dearest case we couldn't fit another of is the cheapest one still in stock (cheapest-first means
+    // anything cheaper is already maxed), so the leftover is under its price.
+    const stillInStock = cand.filter((c) => c.add < c.room).map((c) => c.price);
     const tail =
       left <= 0
         ? " The balance is fully spent."
         : allMaxed
         ? ` ${num(left)} PP is left — that's every case in stock, the cart can't spend more.`
-        : ` ${num(left)} PP left, under the cheapest case's price.`;
+        : ` ${num(left)} PP left, under the ${num(Math.min(...stillInStock))} PP cheapest case still in stock.`;
     notify("Auto-filled", `Added ${num(total)} ${total === 1 ? "case" : "cases"} across ${chosen.length} ${chosen.length === 1 ? "type" : "types"}.${tail}`);
   }
 
