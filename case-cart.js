@@ -35,6 +35,10 @@
   const CASES_PATH = "/armory/cases";
   const MAX_PER_BUY = 50; // the dialog's own cap
   const CONFIRM_MS = 4000;
+  // Cases Auto-fill ("Max" across the shop) never reaches for on its own — still addable by hand from their
+  // tiles. Matched by name, case-insensitively and trimmed.
+  const AUTOFILL_IGNORE = new Set(["music kit box", "agent case", "the dragon case"]);
+  const autoFillIgnored = (name) => AUTOFILL_IGNORE.has(String(name ?? "").trim().toLowerCase());
 
   const KINDS = {
     case: { query: "case-shop", list: "cases", detail: (id) => `/api/shop/cases/${id}`, buy: (id) => `/api/shop/cases/buy/${id}` },
@@ -252,6 +256,7 @@
     for (const entry of cases) {
       const shop = shopEntry(client, "case", entry.id);
       if (!shop || shop.price <= 0 || shop.max < 1) continue;
+      if (autoFillIgnored(shop.entry.name)) continue;
       const have = lines.find((l) => l.kind === "case" && l.id === entry.id)?.qty || 0;
       const room = shop.max - have;
       if (room > 0) cand.push({ id: entry.id, name: shop.entry.name, price: shop.price, room, add: 0 });
