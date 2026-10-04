@@ -466,7 +466,7 @@
     const autoTitle = "Add cases until the balance is as close to 0 as possible";
     return `
       ${head}
-      ${hasLines ? `<div class="max-h-[50vh] overflow-y-auto">${lines.map((l, i) => lineHtml(client, l, i)).join("")}</div>` : ""}
+      ${hasLines ? `<div data-cip-scroll class="max-h-[50vh] overflow-y-auto">${lines.map((l, i) => lineHtml(client, l, i)).join("")}</div>` : ""}
       ${
         s.balance != null || status
           ? `<div class="space-y-1 border-t border-white/10 px-3 py-2 text-xs">
@@ -529,8 +529,13 @@
       if (!el.contains(document.activeElement) || document.activeElement.tagName !== "INPUT") {
         const html = panelHtml(findQueryClient());
         if (el.cipHtml !== html) {
+          // Replacing innerHTML drops the lines list's scroll position; keep it where it was so
+          // removing/changing a line doesn't jump the cart back to the top.
+          const scrollTop = el.querySelector("[data-cip-scroll]")?.scrollTop ?? 0;
           el.innerHTML = html;
           el.cipHtml = html;
+          const list = el.querySelector("[data-cip-scroll]");
+          if (list && scrollTop) list.scrollTop = scrollTop;
         }
       }
     }

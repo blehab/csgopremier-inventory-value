@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CSGOPremier Inventory Value",
-  "version": "1.65.2",
+  "version": "1.65.3",
   "description": "Adds a \"Get my inventory value\" button to the CSGOPremier inventory page, shows the price change on \"Sell to Market\", adds \"Price\" and \"Float\" sort options, a \"Sellable\" tab, match and lobby-invite auto-accept, opening several cases at once, a cart for buying several cases and capsules at once, float/pattern badges (inventory and market), float/price filters and market pattern and rare-item filters, a price sort on the Trade-Up page, match details above the clip on the Overwatch review page, a compact match scoreboard with country flags, with the same scoreboard for live matches, a \"Join game\" button that starts CS:GO and joins the match server, with auto-join when the join timer reaches a set time, and the Season Pass reward track opening on your current level.",
   "host_permissions": [
     "https://api.faceit.com/*"
