@@ -7,11 +7,13 @@
 // costs you everything you had watched.
 //
 // This restores only what was genuinely watched, and never more:
-//   - while the window is not focused the clip is PAUSED, so no progress accrues while you're away
-//     (the site itself keeps playing in the background; this is deliberately stricter);
-//   - the furthest second reached is remembered in memory, per clip, and put back after the reload,
-//     capped at what was actually watched, and the clip is left paused where you left it.
-// The site's own gate is untouched: it still unlocks voting only once playback reports 60 seconds.
+//   - the player tracks watch *coverage* as an array of [start, end] intervals (jumping ahead doesn't
+//     count; the green parts of its timeline are these intervals), and the vote gate opens once the
+//     covered seconds reach min(180, duration). We mirror that intervals array in memory, per clip,
+//     and put it back into the fresh player after a reload, so the coverage — and the vote gate — carry
+//     over instead of resetting to zero. The clip is left paused where you were.
+// The site's own gate is untouched: it still computes eligibility from those intervals itself; we only
+// hand the fresh player the coverage the old one already had.
 //
 // Runs in the page's MAIN world, because the player's progress lives in React state.
 (() => {
@@ -24,8 +26,10 @@
   const clipKey = (video) => ((video && (video.currentSrc || video.src)) || "").match(CLIP_RE)?.[0] || null;
   const fiberOf = (el) => el && el[Object.keys(el).find((k) => k.startsWith("__reactFiber"))];
 
-  let state = null; // { key, watched, position } for the clip on screen
+  let state = null; // { key, intervals: [[s,e],...], position, index } for the clip on screen
   let tracked = null; // the <video> element we've hooked up
+  let trackedKey = null; // the clip key that element was hooked up for
+  let trackedListener = null; // its timeupdate handler, so it can be removed when the element is rebound
 
   // Stop the reload itself.
   //
@@ -75,58 +79,92 @@
     setTimeout(() => chip.remove(), 2800);
   }
 
-  // The player holds the furthest second watched in a React state hook, right after the clip's duration.
-  // Nothing is restored unless that hook is found and reads 0, i.e. the page really did reset it.
-  function watchedHook(video) {
+  // The player's useState hooks, in order, for the component that owns this <video>.
+  function playerHooks(video) {
     let fiber = fiberOf(video);
     while (fiber && typeof fiber.type !== "function") fiber = fiber.return;
-    if (!fiber || !Number.isFinite(video.duration)) return null;
+    if (!fiber) return null;
     const hooks = [];
-    for (let h = fiber.memoizedState; h; h = h.next) if (h.queue?.dispatch) hooks.push(h);
-    const durationAt = hooks.findIndex((h) => typeof h.memoizedState === "number" && Math.abs(h.memoizedState - video.duration) < 0.5);
-    const hook = durationAt >= 0 ? hooks[durationAt + 1] : null;
-    return hook && hook.memoizedState === 0 ? hook : null;
+    for (let h = fiber.memoizedState; h; h = h.next) hooks.push(h);
+    return hooks;
   }
 
-  // The fresh player only records the clip's duration once its metadata arrives, and that state is what
-  // identifies the hook, so keep looking for a moment before giving up.
+  // A coverage-intervals state: an array of [start, end] number pairs (empty in a fresh player). Empty
+  // arrays are ambiguous, so we identify the real one only when it's non-empty (see readCoverage), then
+  // restore into the hook at that same index — hook order is identical across instances of one component.
+  const isIntervals = (v) =>
+    Array.isArray(v) && v.every((x) => Array.isArray(x) && x.length === 2 && typeof x[0] === "number" && typeof x[1] === "number");
+  const coveredSeconds = (intervals) => intervals.reduce((sum, [s, e]) => sum + Math.max(0, e - s), 0);
+
+  // The player's current coverage intervals (a copy) and the index of the hook that holds them, or null
+  // until the player has recorded at least one interval.
+  function readCoverage(video) {
+    const hooks = playerHooks(video);
+    if (!hooks) return null;
+    const index = hooks.findIndex((h) => h.queue?.dispatch && isIntervals(h.memoizedState) && h.memoizedState.length);
+    if (index < 0) return null;
+    return { index, intervals: hooks[index].memoizedState.map((p) => p.slice()) };
+  }
+
+  // Put the remembered coverage back into the fresh player. Only when it really reset (the intervals hook
+  // at the same index is present, is an intervals array, and is currently empty) — never overwrite coverage
+  // the new player already has, and bail rather than dispatch into a hook that isn't the one we expected.
   function restore(video, attempt = 0) {
-    if (!state || video !== document.querySelector("video")) return;
-    const hook = watchedHook(video);
-    if (!hook) {
+    // Recheck the clip before a deferred restore lands: the element may have moved on to another clip.
+    if (!state || video !== document.querySelector("video") || clipKey(video) !== state.key) return;
+    if (!state.intervals.length || state.index == null) return;
+    const hooks = playerHooks(video);
+    const hook = hooks && hooks[state.index];
+    if (!hooks || !Number.isFinite(video.duration) || !hook?.queue?.dispatch || !isIntervals(hook.memoizedState)) {
       if (attempt < 40) setTimeout(() => restore(video, attempt + 1), 80);
       return;
     }
-    const watched = Math.min(state.watched, video.duration);
-    if (watched < 1) return;
-    hook.queue.dispatch(watched);
-    // The player clamps seeking to the furthest second watched, so let that render land first.
+    if (hook.memoizedState.length) return; // the player already has coverage; leave it alone
+    const dur = video.duration;
+    const intervals = state.intervals
+      .map(([s, e]) => [Math.max(0, Math.min(s, dur)), Math.max(0, Math.min(e, dur))])
+      .filter(([s, e]) => e - s > 0.05);
+    if (!intervals.length) return;
+    hook.queue.dispatch(intervals);
+    // Let that render land, then seek back to where you left off.
     setTimeout(() => {
-      video.currentTime = Math.min(state.position, watched);
-      notice(video, `Progress kept · ${fmt(watched)} watched`);
+      video.currentTime = Math.min(state.position, dur);
+      notice(video, `Progress kept · ${fmt(coveredSeconds(intervals))} watched`);
     }, 60);
   }
 
   function track(video, key) {
+    // Rebinding (same element, new clip): drop the old handler so it can't keep writing to the new clip's state.
+    if (tracked && trackedListener) tracked.removeEventListener("timeupdate", trackedListener);
     tracked = video;
-    if (!state || state.key !== key) state = { key, watched: 0, position: 0 }; // a different clip: start fresh
-    video.addEventListener("timeupdate", () => {
+    trackedKey = key;
+    if (!state || state.key !== key) state = { key, intervals: [], position: 0, index: null }; // different clip: start fresh
+    trackedListener = () => {
       if (!state || state.key !== key) return;
       state.position = video.currentTime;
-      if (video.currentTime > state.watched) state.watched = video.currentTime;
-    });
+      // Mirror the player's own coverage intervals as they grow, so a remount can be handed them back.
+      const cov = readCoverage(video);
+      if (cov) {
+        state.intervals = cov.intervals;
+        state.index = cov.index;
+      }
+    };
+    video.addEventListener("timeupdate", trackedListener);
   }
 
   function update() {
     if (!onReviewPage()) {
-      state = tracked = null;
+      state = tracked = trackedKey = trackedListener = null;
       return;
     }
     const video = document.querySelector("video");
     const key = clipKey(video);
-    if (!video || !key || video === tracked) return; // same element: nothing was remounted
+    if (!video || !key) return;
+    // Nothing to do only when it's the same element AND the same clip. A reused element that swapped clips
+    // (the signature-only URL change keeps the same key) must re-track, or its progress lands on the old clip.
+    if (video === tracked && key === trackedKey) return;
 
-    const resuming = state && state.key === key && state.watched >= 1;
+    const resuming = state && state.key === key && state.intervals.length > 0;
     track(video, key);
     if (!resuming) return;
     if (video.readyState >= 1) restore(video);

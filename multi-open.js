@@ -91,7 +91,15 @@
     } catch {}
     if (!res.ok) {
       const error = new Error(data?.error || data?.message || text.trim() || `HTTP ${res.status}`);
-      Object.assign(error, { code: data?.code, retryAt: data?.retry_at });
+      Object.assign(error, { status: res.status, code: data?.code, retryAt: data?.retry_at });
+      // 429: prefer the server's own "wait this long" (body retry_at, else the Retry-After header,
+      // which is either a number of seconds or an HTTP date).
+      if (res.status === 429 && error.retryAt == null) {
+        const ra = res.headers.get("Retry-After");
+        const secs = Number(ra);
+        if (ra && Number.isFinite(secs)) error.retryAt = Date.now() + secs * 1000;
+        else if (ra) error.retryAt = Date.parse(ra);
+      }
       throw error;
     }
     return data;
@@ -287,6 +295,17 @@
       </div>`;
   }
 
+  // CS:GO exterior for a float, by Valve's thresholds (same boundaries the site's wear filter uses).
+  // Drops with no float — stickers, agents, cases, music kits, graffiti, pins — have no exterior.
+  const WEAR_TIERS = [
+    { max: 0.07, name: "Factory New", color: "#4ec9a5" },
+    { max: 0.15, name: "Minimal Wear", color: "#8bc34a" },
+    { max: 0.38, name: "Field-Tested", color: "#e6c84f" },
+    { max: 0.45, name: "Well-Worn", color: "#e69a4f" },
+    { max: Infinity, name: "Battle-Scarred", color: "#e45b5b" },
+  ];
+  const wearFor = (f) => (typeof f === "number" ? WEAR_TIERS.find((t) => f < t.max) : null);
+
   const fmtPP = (n) => Number(n).toLocaleString("en-US");
   // Same look as the price on the site's item cards.
   const priceHtml = (pp) =>
@@ -317,7 +336,8 @@
           burnPriced++;
         }
         const color = s.rarity_color || RARITY_COLORS[s.rarity] || "#4b69ff";
-        const float = typeof item?.float_value === "number" ? item.float_value.toFixed(8) : "";
+        const floatVal = typeof item?.float_value === "number" ? item.float_value : null;
+        const wear = wearFor(floatVal); // exterior, when this drop has a float
         const badges = B ? B.badgesFor(item, s) : [];
         // Rare drops get a border and glow in their best badge's colour.
         const glow = B?.topColor(badges);
@@ -333,7 +353,11 @@
             </div>
             <p class="mt-2 text-[10px] font-semibold" style="color:${color}">${escapeHtml(s.rarity)}${s.phase ? ` · ${escapeHtml(s.phase)}` : ""}</p>
             <p class="truncate text-xs font-bold text-white">${escapeHtml(s.name)}</p>
-            ${float ? `<p class="mt-1 font-mono text-[10px] text-white/45">${float}</p>` : ""}
+            ${
+              wear
+                ? `<p class="mt-1 flex items-center gap-1.5 font-mono text-[10px]"><span class="font-bold uppercase tracking-wide" style="color:${wear.color}">${escapeHtml(wear.name)}</span><span class="text-white/45">${floatVal.toFixed(8)}</span></p>`
+                : ""
+            }
             ${badges.length ? `<div class="mt-2 flex flex-wrap gap-1">${B.badgeHtml(badges)}</div>` : ""}
             ${priceHtml(pp)}
             <div class="cip-actions mt-auto pt-3">${actionsHtml(item.id)}</div>
@@ -458,6 +482,43 @@
   const trades = new Map(); // item id → { status, item, quote, requestKey, error, amount }
   let tradeTimer = null;
 
+  // Burn rate-limit (HTTP 429): the server throttles bursts of burns, so one 429 locks every Burn
+  // button until the cooldown runs out, with a live countdown and the server's message.
+  let burnLockUntil = 0; // ms timestamp; while in the future, Burn is locked
+  let burnLockTimer = null;
+  let burnLockMessage = "";
+  const burnLocked = () => Math.max(0, Math.ceil((burnLockUntil - Date.now()) / 1000));
+
+  // Start/extend the burn cooldown from a caught 429 and lock every Burn button for its duration.
+  function startBurnCooldown(e) {
+    const when = typeof e?.retryAt === "number" ? e.retryAt : Date.parse(e?.retryAt);
+    const until = Number.isFinite(when) && when > Date.now() ? when : Date.now() + 10000; // default 10s
+    burnLockUntil = Math.max(burnLockUntil, until);
+    burnLockMessage = e?.message || "Too many burns in a row.";
+    burnLockTimer ??= setInterval(tickBurnLock, 1000);
+    for (const id of trades.keys()) renderActions(id);
+    renderBulkBar();
+  }
+
+  // Count the lock down each second; restore the buttons once it clears.
+  function tickBurnLock() {
+    const left = burnLocked();
+    if (left > 0) {
+      for (const el of document.querySelectorAll(`#${REELS_ID} .cip-burn-left`)) el.textContent = `${left}s`;
+      return;
+    }
+    clearInterval(burnLockTimer);
+    burnLockTimer = null;
+    burnLockMessage = "";
+    for (const id of trades.keys()) renderActions(id);
+    renderBulkBar();
+  }
+
+  const burnLockNote = () =>
+    burnLocked() > 0
+      ? `<p class="text-[10px] leading-4 text-amber-300">${escapeHtml(burnLockMessage)} Burn again in <span class="cip-burn-left tabular-nums font-bold">${burnLocked()}s</span>.</p>`
+      : "";
+
   // The site's rules (case reveal): why an item can't be sold or burned, if it can't.
   function blockedReason(item) {
     if (item.source === "admin_grant") return "Admin gifts cannot be sold or burned.";
@@ -494,8 +555,10 @@
     if (t.status === "selling") return `<button type="button" class="${SELL}" disabled>Selling…</button>`;
     if (t.status === "burning") return `<button type="button" class="${BURN}" disabled>Burning…</button>`;
     if (t.status === "burnConfirm") {
+      const locked = burnLocked() > 0;
       return `<div class="grid gap-1">
-        <button type="button" class="${BURN}" data-act="burn-confirm">Confirm burn · ${fmtPP(item.burn_payout)} PP</button>
+        ${burnLockNote()}
+        <button type="button" class="${BURN}" data-act="burn-confirm"${locked ? " disabled" : ""}>Confirm burn · ${fmtPP(item.burn_payout)} PP</button>
         <button type="button" class="${GRAY}" data-act="cancel">Cancel</button></div>`;
     }
     const blocked = blockedReason(item);
@@ -513,8 +576,11 @@
       }
     } else parts.push(note("Not accepted by the Market."));
     if (t.error) parts.unshift(note(t.error, "text-amber-300"));
-    if (canBurn(item)) parts.push(`<button type="button" class="${BURN}" data-act="burn">Burn · ${fmtPP(item.burn_payout)} PP</button>`);
-    else if (item.burn_unavailable_reason) parts.push(note(item.burn_unavailable_reason));
+    if (canBurn(item)) {
+      const locked = burnLocked() > 0;
+      if (locked) parts.push(burnLockNote());
+      parts.push(`<button type="button" class="${BURN}" data-act="burn"${locked ? " disabled" : ""}>Burn · ${fmtPP(item.burn_payout)} PP</button>`);
+    } else if (item.burn_unavailable_reason) parts.push(note(item.burn_unavailable_reason));
     return `<div class="grid gap-1">${parts.join("")}</div>`;
   }
 
@@ -537,13 +603,17 @@
     const all = picked.size === 0;
 
     if (confirm === "burn") {
+      const locked = burnLocked() > 0;
       bar.innerHTML = `
         <div class="flex flex-wrap items-center justify-between gap-3 border border-tertiary/30 bg-tertiary/[0.06] px-3 py-2">
-          <p class="text-[11px] text-white/70">Burn ${burn.length} ${burn.length === 1 ? "item" : "items"} for
-            <span class="font-bold tabular-nums text-tertiary">+${fmtPP(burnTotal)}</span> PP? This cannot be undone.</p>
+          <div class="flex flex-col gap-1">
+            <p class="text-[11px] text-white/70">Burn ${burn.length} ${burn.length === 1 ? "item" : "items"} for
+              <span class="font-bold tabular-nums text-tertiary">+${fmtPP(burnTotal)}</span> PP? This cannot be undone.</p>
+            ${burnLockNote()}
+          </div>
           <div class="flex items-center gap-2">
             <button type="button" class="${GRAY} w-auto px-3" data-bulk="cancel">Cancel</button>
-            <button type="button" class="${BURN} w-auto px-3" data-bulk="burn-confirm">Confirm burn</button>
+            <button type="button" class="${BURN} w-auto px-3" data-bulk="burn-confirm"${locked ? " disabled" : ""}>Confirm burn</button>
           </div>
         </div>`;
       return;
@@ -565,9 +635,10 @@
         <div class="flex items-center gap-2">
           <button type="button" class="${SELL} w-auto px-3" data-bulk="sell"${sell.length ? "" : " disabled"}>
             ${all ? "Sell all" : "Sell"} · ${sell.length}</button>
-          <button type="button" class="${BURN} w-auto px-3" data-bulk="burn"${burn.length ? "" : " disabled"}>
+          <button type="button" class="${BURN} w-auto px-3" data-bulk="burn"${burn.length && burnLocked() <= 0 ? "" : " disabled"}>
             ${all ? "Burn all" : "Burn"} · ${burn.length}${burnTotal ? ` · +${fmtPP(burnTotal)} PP` : ""}</button>
         </div>
+        ${burnLocked() > 0 ? `<div class="w-full">${burnLockNote()}</div>` : ""}
       </div>`;
   }
 
@@ -602,10 +673,12 @@
       }
       refreshAfterTrade(res?.new_balance);
     } catch (e) {
+      const limited = e?.status === 429;
       for (const t of burn) {
         t.status = "idle";
-        t.error = errorText(e);
+        t.error = limited ? "" : errorText(e); // on a 429 the lock note carries the message
       }
+      if (limited) startBurnCooldown(e);
     }
     picked.clear();
     for (const t of burn) renderActions(t.item.id);
@@ -739,7 +812,8 @@
         refreshAfterTrade(res?.new_balance);
       } catch (err) {
         t.status = "idle";
-        t.error = errorText(err);
+        if (err?.status === 429) startBurnCooldown(err); // the lock note carries the message
+        else t.error = errorText(err);
       }
     }
     renderActions(id);

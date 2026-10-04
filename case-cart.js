@@ -86,6 +86,13 @@
   let buyingTimer = 0;
   const STATUS_MS = 6000;
 
+  // Any change to the cart must void an armed "Buy all" confirmation, so the second click always confirms
+  // the cart as it is now — never a quantity or a set of lines that changed after the first click.
+  function resetConfirm() {
+    confirmUntil = 0;
+    clearTimeout(confirmTimer);
+  }
+
   const fiberOf = (el) => el && el[Object.keys(el).find((k) => k.startsWith("__reactFiber"))];
   const onCasesPage = () => location.pathname.startsWith(CASES_PATH);
 
@@ -192,6 +199,7 @@
 
   // One more of an item, or with `all` as many as can be bought (the stock/50 cap, then the wallet).
   function add(kind, id, all) {
+    if (busy) return; // a checkout is running: don't let a tile change a purchase that's already in flight
     const client = findQueryClient();
     const shop = shopEntry(client, kind, id);
     if (!shop || shop.max < 1) return;
@@ -212,8 +220,81 @@
     line.error = "";
     status = null;
     open = true;
+    resetConfirm(); // the cart changed: a pending "Buy all" confirmation no longer matches it
     save();
     render();
+  }
+
+  // Fill the cart with cases so the balance ends as close to 0 as possible, keeping whatever's already in
+  // the cart (its cost is spent first). Draws on every in-stock case in the shop: with many price points it
+  // can land nearer to 0 than a single case would. Greedy, largest-fitting case first — since the shop has a
+  // cheap case, the leftover ends under that cheapest case's price (or, if stock runs out, under what's left
+  // to add). Packs are left alone, and the cart's "never past the wallet" rule holds (it only spends `spare`).
+  function autoFill() {
+    if (busy) return;
+    const client = findQueryClient();
+    const w = wallet(client);
+    if (w.balance == null) return notify("Auto-fill", "The balance isn't known right now — try again in a moment.");
+    if (w.frozen) return notify("Auto-fill", "The wallet is frozen, so nothing can be bought.");
+    if (!w.isPro) return notify("Auto-fill", "Buying cases needs Premium Pro.");
+
+    // PP left to spend once the current cart is paid for.
+    let spare = w.balance;
+    for (const l of lines) {
+      const shop = shopEntry(client, l.kind, l.id);
+      if (shop) spare -= shop.price * l.qty;
+    }
+    if (spare <= 0) return notify("Auto-fill", "The cart already uses up the balance — remove something to add more.");
+
+    // Every buyable case with room left (stock/50 cap, minus what's already in the cart).
+    const cases = client?.getQueryData([KINDS.case.query])?.[KINDS.case.list] || [];
+    const cand = [];
+    for (const entry of cases) {
+      const shop = shopEntry(client, "case", entry.id);
+      if (!shop || shop.price <= 0 || shop.max < 1) continue;
+      const have = lines.find((l) => l.kind === "case" && l.id === entry.id)?.qty || 0;
+      const room = shop.max - have;
+      if (room > 0) cand.push({ id: entry.id, name: shop.entry.name, price: shop.price, room, add: 0 });
+    }
+    if (!cand.length) return notify("Auto-fill", "No cases are in stock to add right now.");
+
+    const minPrice = Math.min(...cand.map((c) => c.price));
+    if (minPrice > spare)
+      return notify("Auto-fill", `The cheapest case is ${num(minPrice)} PP, more than the ${num(spare)} PP left after the cart.`);
+
+    // Largest-fitting case first: take as many of the dearest as fit, then the next, down to the cheapest.
+    cand.sort((a, b) => b.price - a.price);
+    let left = spare;
+    for (const c of cand) {
+      const n = Math.min(c.room, Math.floor(left / c.price));
+      c.add = n;
+      left -= n * c.price;
+    }
+
+    const chosen = cand.filter((c) => c.add > 0);
+    const total = chosen.reduce((t, c) => t + c.add, 0);
+    if (!total) return notify("Auto-fill", `The cheapest case is ${num(minPrice)} PP, more than the ${num(spare)} PP left after the cart.`);
+
+    for (const c of chosen) {
+      let line = lines.find((l) => l.kind === "case" && l.id === c.id);
+      if (!line) lines.push((line = { kind: "case", id: c.id, qty: 0, name: c.name, error: "" }));
+      line.qty += c.add;
+      line.error = "";
+    }
+    status = null;
+    open = true;
+    resetConfirm(); // the cart changed: a pending "Buy all" confirmation no longer matches it
+    save();
+    render();
+
+    const allMaxed = cand.every((c) => c.add === c.room);
+    const tail =
+      left <= 0
+        ? " The balance is fully spent."
+        : allMaxed
+        ? ` ${num(left)} PP is left — that's every case in stock, the cart can't spend more.`
+        : ` ${num(left)} PP left, under the cheapest case's price.`;
+    notify("Auto-filled", `Added ${num(total)} ${total === 1 ? "case" : "cases"} across ${chosen.length} ${chosen.length === 1 ? "type" : "types"}.${tail}`);
   }
 
   const idOf = (card) => {
@@ -267,7 +348,7 @@
       const inCart = lines.find((l) => l.kind === item.kind && l.id === item.id)?.qty || 0;
       // Count the tile's "N left" down by what's reserved in the cart (only cases with a stock limit show it).
       if (shop && shop.entry.stock_remaining != null) setLeft(card, Math.max(0, shop.entry.stock_remaining - inCart));
-      const can = !!shop && shop.max > 0 && inCart < shop.max && !buy.disabled;
+      const can = !busy && !!shop && shop.max > 0 && inCart < shop.max && !buy.disabled;
       if (!btn) {
         btn = document.createElement("button");
         btn.type = "button";
@@ -372,10 +453,14 @@
     if (!open) return head;
     const confirming = Date.now() < confirmUntil;
     const buyLabel = busy ? "Buying…" : s.problem || (confirming ? `Confirm · ${num(s.total)} PP` : `Buy all · ${num(s.total)} PP`);
+    const hasLines = lines.length > 0;
+    const autoTitle = "Add cases until the balance is as close to 0 as possible";
     return `
       ${head}
-      <div class="max-h-[50vh] overflow-y-auto">${lines.map((l, i) => lineHtml(client, l, i)).join("")}</div>
-      <div class="space-y-1 border-t border-white/10 px-3 py-2 text-xs">
+      ${hasLines ? `<div class="max-h-[50vh] overflow-y-auto">${lines.map((l, i) => lineHtml(client, l, i)).join("")}</div>` : ""}
+      ${
+        s.balance != null || status
+          ? `<div class="space-y-1 border-t border-white/10 px-3 py-2 text-xs">
         ${
           s.balance != null
             ? `<div class="flex justify-between text-white/50"><span>Wallet</span><span class="tabular-nums text-white/80">${pp(s.balance)}</span></div>
@@ -384,11 +469,18 @@
             : ""
         }
         ${status ? `<p class="pt-1 text-[11px] leading-snug ${status.ok ? "text-secondary" : "text-primary"}" role="status">${escapeHtml(status.text)}</p>` : ""}
-      </div>
+      </div>`
+          : ""
+      }
       <div class="flex gap-2 border-t border-white/10 px-3 py-2">
-        <button type="button" data-act="clear" class="${GHOST}" ${busy ? "disabled" : ""}>Clear</button>
+        <button type="button" data-act="autofill" class="${GHOST} ${hasLines ? "" : "flex-1"}" ${busy ? "disabled" : ""} title="${autoTitle}" aria-label="${autoTitle}">Auto-fill</button>
+        ${
+          hasLines
+            ? `<button type="button" data-act="clear" class="${GHOST}" ${busy ? "disabled" : ""}>Clear</button>
         <button type="button" data-act="buy" class="${confirming ? CONFIRM : PRIMARY} flex-1" ${busy || s.problem || !s.count ? "disabled" : ""}
-                title="${confirming ? "Click again to buy everything in the cart" : "Buy everything in the cart"}">${escapeHtml(buyLabel)}</button>
+                title="${confirming ? "Click again to buy everything in the cart" : "Buy everything in the cart"}">${escapeHtml(buyLabel)}</button>`
+            : ""
+        }
       </div>`;
   }
 
@@ -418,7 +510,7 @@
       status = null; // left the shop: the last purchase's message is done with
       clearTimeout(statusTimer);
     }
-    const show = onCasesPage() && (lines.length > 0 || !!status); // an emptied cart stays up with what was bought
+    const show = onCasesPage(); // always up on the shop so Auto-fill has a home, even with an empty cart
     const existing = document.getElementById(PANEL_ID);
     if (!show) {
       existing?.remove();
@@ -437,6 +529,7 @@
   }
 
   function setQty(i, qty) {
+    if (busy) return; // don't let − / + / Max / the quantity box change a purchase that's in flight
     const line = lines[i];
     if (!line) return;
     const client = findQueryClient();
@@ -455,7 +548,7 @@
     else line.qty = Math.min(qty, Math.max(1, max));
     if (lines[i] === line) line.error = "";
     status = null;
-    confirmUntil = 0;
+    resetConfirm();
     save();
     render();
   }
@@ -485,9 +578,13 @@
       return;
     }
     else if (act === "remove") setQty(i, 0);
-    else if (act === "clear") {
+    else if (act === "autofill") {
+      autoFill();
+      return;
+    } else if (act === "clear") {
       lines = [];
       status = null;
+      resetConfirm();
       save();
     } else if (act === "buy") {
       if (Date.now() < confirmUntil) {
@@ -507,7 +604,9 @@
 
   async function checkout() {
     const client = findQueryClient();
-    const confirmed = new Map(lines.map((l) => [l, shopEntry(client, l.kind, l.id)?.price])); // what the confirmed total used
+    // Snapshot each line's price AND quantity as confirmed. The buy uses this snapshot, not the live line,
+    // so nothing bought differs from what the confirmed total covered even if something changed mid-checkout.
+    const confirmed = new Map(lines.map((l) => [l, { price: shopEntry(client, l.kind, l.id)?.price, qty: l.qty }]));
     busy = true;
     status = null;
     clearTimeout(buyingTimer);
@@ -517,24 +616,28 @@
     const failed = [];
     for (const line of [...lines]) {
       const k = KINDS[line.kind];
+      const snap = confirmed.get(line) || { price: undefined, qty: line.qty };
+      const want = snap.qty; // buy exactly what was confirmed, not whatever the live line says now
       try {
         const d = await api(k.detail(encodeURIComponent(line.id)));
-        const price = d?.is_pro ? d.pro_price_pp : (d?.price_pp ?? 0);
-        const stock = d?.stock_remaining ?? 0;
+        // Mirror shopEntry's Pro-price fallback: a Pro account pays pro_price_pp, or price_pp if it's unset.
+        const price = (d?.is_pro ? (d.pro_price_pp ?? d.price_pp) : d?.price_pp) ?? 0;
+        // stock_remaining == null means unlimited (as the shop tiles treat it), not sold out.
+        const stock = d?.stock_remaining == null ? Infinity : d.stock_remaining;
         const name = (d?.crate || d?.pack)?.name || line.name;
         if (line.kind === "case" && !d?.is_pro) throw new Error("Buying cases needs Premium Pro");
         if (d?.pack && d.can_purchase === false) throw new Error("Can't be bought right now");
         if (d?.pp_frozen) throw new Error("Wallet frozen");
-        if (stock < line.qty) {
+        if (stock < want) {
           if (stock > 0) line.qty = Math.min(stock, MAX_PER_BUY);
           throw new Error(stock > 0 ? `Only ${stock} left, so the quantity was lowered: check and buy again` : "Sold out");
         }
         if (!(price > 0)) throw new Error("No price");
-        const before = confirmed.get(line);
+        const before = snap.price;
         if (before != null && price > before) throw new Error(`Price went up to ${num(price)} PP each: check and buy again`);
-        const body = line.kind === "case" ? { quantity: line.qty, expected_price_pp: price } : { quantity: line.qty };
+        const body = line.kind === "case" ? { quantity: want, expected_price_pp: price } : { quantity: want };
         const res = await api(k.buy(encodeURIComponent(line.id)), body);
-        const got = res?.quantity ?? line.qty;
+        const got = res?.quantity ?? want;
         bought.push(`${got}× ${name}`);
         line.qty -= got;
         if (line.qty <= 0) lines = lines.filter((l) => l !== line);

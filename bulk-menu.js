@@ -118,7 +118,7 @@
       !!item.market_eligible &&
       !item.sell_locked &&
       !item.imported_from_steam &&
-      item.source !== "admin" &&
+      item.source !== "admin_grant" && // match sellable-tab.js / multi-open.js; the site excludes admin gifts
       (item.quick_sell_percentage || 0) > 0
     );
   }
@@ -127,9 +127,12 @@
   // fixed quick-sell rate and a burn payout. sell_locked items can't be either; a non-empty
   // quick_sell_reason means the site won't quick-sell that one.
   const sellCandidate = (item) => !item.sell_locked && (item.quick_sell_percentage || 0) > 0 && !item.quick_sell_reason;
-  const quickSellAmount = (item) => Math.round((item.pp_value || 0) * (item.quick_sell_percentage || 0));
+  // The pre-confirmation estimate only; the result uses the server's own total_payout. Match the site's
+  // per-item maths exactly (Math.floor, and burn falls back to the same floor when burn_payout is unset),
+  // so the estimate we show lines up with what the site would quote.
+  const quickSellAmount = (item) => Math.floor((item.pp_value || 0) * (item.quick_sell_percentage || 0));
   const burnCandidate = (item) => !item.sell_locked;
-  const burnAmount = (item) => item.burn_payout || 0;
+  const burnAmount = (item) => item.burn_payout ?? Math.floor((item.pp_value || 0) * (item.quick_sell_percentage || 0));
 
   // ---------- menu ----------
 
@@ -198,7 +201,21 @@
 
   // ---------- selling several items on the Market ----------
 
+  // Each dialog flow (a Market quote, a Quick-Sell, a Burn) gets its own token. Starting or closing a
+  // dialog bumps the counter, so a slow request that returns after its dialog was cancelled — or after a
+  // different dialog was opened — sees its token is stale and neither re-renders nor executes anything.
+  let currentOp = 0;
+  const newOp = () => ++currentOp;
+  const opAlive = (op) => op === currentOp;
+  // The one active click handler for whatever the dialog currently shows. Because dialogShell reuses the
+  // same element (only swapping innerHTML), attaching a listener per render would leave old listeners on
+  // the container — a stale Burn handler and a fresh Market handler could then both fire on one Confirm.
+  // A single replaceable handler means exactly one action can run, and it's the one matching what's shown.
+  let dialogActions = null;
+
   const closeDialog = () => {
+    currentOp++; // invalidate any in-flight operation so a late result can't re-open or act on this dialog
+    dialogActions = null;
     document.getElementById(DIALOG_ID)?.remove();
     clearInterval(expiryTimer);
     expiryTimer = null;
@@ -216,7 +233,12 @@
       // with no z-index, behind the page. Above the site's own dialogs and its item reveal (10000).
       el.style.zIndex = "10100";
       el.addEventListener("click", (e) => {
-        if (e.target === el && !el.dataset.busy) closeDialog();
+        if (e.target === el) {
+          if (!el.dataset.busy) closeDialog();
+          return;
+        }
+        const act = e.target.closest("[data-act]")?.dataset.act;
+        if (act) dialogActions?.(act, e);
       });
       document.body.appendChild(el);
     }
@@ -244,7 +266,9 @@
   async function sellItems(chosen, { refresh = true } = {}) {
     const candidates = chosen.filter(marketCandidate);
     if (!candidates.length) return null;
+    const op = newOp();
     armOutcome();
+    dialogActions = null;
 
     dialogShell(
       dialogHeader("Checking") +
@@ -260,18 +284,22 @@
       for (let i = 0; i < candidates.length; i += QUOTE_BATCH) {
         const batch = candidates.slice(i, i + QUOTE_BATCH);
         const res = await apiPost("/api/market/quote-sell-bulk", { item_ids: batch.map((x) => x.id) });
+        if (!opAlive(op)) return null; // dialog cancelled or a different dialog opened while we waited
         for (const row of res?.items || []) offers.set(row.item_id, row);
         if (i + QUOTE_BATCH < candidates.length) await new Promise((r) => setTimeout(r, 400));
       }
     } catch (e) {
+      if (!opAlive(op)) return null;
       settle(null);
+      dialogActions = (act) => act === "close" && closeDialog();
       dialogShell(
         dialogHeader("Failed") +
           `<div class="px-5 py-5"><p class="text-sm text-white/70">Could not get offers: ${escapeHtml(e.message)}</p>
              <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Close</button></div></div>`
-      ).addEventListener("click", (ev) => ev.target.closest('[data-act="close"]') && closeDialog());
-      return;
+      );
+      return null;
     }
+    if (!opAlive(op)) return null;
 
     const accepted = candidates
       .map((item) => ({ item, quote: offers.get(item.id)?.quote, error: offers.get(item.id)?.error }))
@@ -281,7 +309,7 @@
       .filter((row) => !offers.get(row.item.id)?.quote);
     const skipped = chosen.length - candidates.length;
 
-    renderOffers(accepted, refused, skipped, refresh);
+    renderOffers(accepted, refused, skipped, refresh, op);
     return outcome; // resolved by executeSales, or null when the dialog is dismissed
   }
 
@@ -300,9 +328,10 @@
   const earliestExpiry = (rows) => Math.min(...rows.map((r) => new Date(r.quote.expires_at).getTime()));
   const secondsLeft = (rows) => Math.max(0, Math.round((earliestExpiry(rows) - Date.now()) / 1000));
 
-  function renderOffers(accepted, refused, skipped, refresh = true) {
+  function renderOffers(accepted, refused, skipped, refresh = true, op = currentOp) {
     if (!accepted.length) {
       const reasons = [...new Set(refused.map((r) => r.error))].slice(0, 4);
+      dialogActions = (act) => act === "close" && closeDialog();
       dialogShell(
         dialogHeader("No offers") +
           `<div class="px-5 py-5">
@@ -310,7 +339,7 @@
              <ul class="mt-3 space-y-1 text-xs text-white/45">${reasons.map((r) => `<li>· ${escapeHtml(r)}</li>`).join("")}</ul>
              <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Close</button></div>
            </div>`
-      ).addEventListener("click", (e) => e.target.closest('[data-act="close"]') && closeDialog());
+      );
       return;
     }
 
@@ -366,25 +395,26 @@
     expiryTimer = setInterval(tick, 1000);
     tick();
 
-    el.addEventListener("click", (e) => {
-      if (e.target.closest('[data-act="cancel"]')) closeDialog();
-      else if (e.target.closest('[data-act="confirm"]')) executeSales(accepted, refresh);
-    });
+    dialogActions = (act) => {
+      if (act === "cancel") closeDialog();
+      else if (act === "confirm" && opAlive(op)) executeSales(accepted, refresh, op);
+    };
   }
 
-  async function executeSales(accepted, refresh = true) {
+  async function executeSales(accepted, refresh = true, op = currentOp) {
     clearInterval(expiryTimer);
     const done = [];
     const failed = [];
     for (const [i, row] of accepted.entries()) {
-      dialogShell(
-        dialogHeader("Selling") +
-          `<div class="flex items-center gap-3 px-5 py-6">
-             <span class="h-4 w-4 animate-spin rounded-full border-2 border-primary/30 border-t-primary"></span>
-             <p class="text-sm text-white/70">Selling ${i + 1} of ${accepted.length}…</p>
-           </div>`,
-        { busy: true }
-      );
+      if (opAlive(op))
+        dialogShell(
+          dialogHeader("Selling") +
+            `<div class="flex items-center gap-3 px-5 py-6">
+               <span class="h-4 w-4 animate-spin rounded-full border-2 border-primary/30 border-t-primary"></span>
+               <p class="text-sm text-white/70">Selling ${i + 1} of ${accepted.length}…</p>
+             </div>`,
+          { busy: true }
+        );
       try {
         const res = await apiPost("/api/market/execute", { quote_id: row.quote.id, request_key: crypto.randomUUID() });
         done.push({ ...row, balance: res?.balance_pp });
@@ -407,7 +437,9 @@
       failed: failed.map((r) => ({ id: r.item.id, error: r.error })),
       balance,
     });
+    if (!opAlive(op)) return; // dialog was dismissed; the sales still completed and are reported above
 
+    dialogActions = (act) => act === "close" && closeDialog();
     dialogShell(
       dialogHeader(failed.length ? "Partly sold" : "Sold") +
         `<div class="px-5 py-5">
@@ -422,7 +454,7 @@
            }
            <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Done</button></div>
          </div>`
-    ).addEventListener("click", (e) => e.target.closest('[data-act="close"]') && closeDialog());
+    );
   }
 
   // ---------- quick-sell / burn (the site's instant actions, in bulk) ----------
@@ -451,13 +483,14 @@
           warn: "Quick-selling is permanent and pays the site's fixed rate, not the Market price." };
 
   function noneEligible(cfg, kind) {
+    dialogActions = (act) => act === "close" && closeDialog();
     dialogShell(
       dialogHeader("Nothing eligible", cfg.title) +
         `<div class="px-5 py-5">
            <p class="text-sm text-white/70">None of the selected items can be ${kind === "burn" ? "burned" : "quick-sold"}.</p>
            <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Close</button></div>
          </div>`
-    ).addEventListener("click", (e) => e.target.closest('[data-act="close"]') && closeDialog());
+    );
   }
 
   function runBulk(kind, chosen, { refresh = true } = {}) {
@@ -465,6 +498,7 @@
     const cfg = bulkConfig(kind);
     const eligible = chosen.filter(cfg.candidate);
     const skipped = chosen.length - eligible.length;
+    const op = newOp();
     if (!eligible.length) return noneEligible(cfg, kind);
 
     const total = eligible.reduce((s, i) => s + cfg.amount(i), 0);
@@ -483,7 +517,7 @@
 
     const note = skipped ? `${skipped} ${skipped === 1 ? "item isn't" : "items aren't"} eligible and will be left alone.` : "";
 
-    const el = dialogShell(
+    dialogShell(
       dialogHeader(`${eligible.length} ${eligible.length === 1 ? "item" : "items"}`, cfg.title) +
         `<ul class="overflow-y-auto" style="max-height:46vh">${rows}</ul>
          <div class="border-t border-white/[0.07] px-4 py-3">
@@ -502,16 +536,17 @@
          </div>`
     );
 
-    el.addEventListener("click", (e) => {
-      if (e.target.closest('[data-act="cancel"]')) closeDialog();
-      else if (e.target.closest('[data-act="confirm"]')) executeBulk(kind, eligible, refresh);
-    });
+    dialogActions = (act) => {
+      if (act === "cancel") closeDialog();
+      else if (act === "confirm" && opAlive(op)) executeBulk(kind, eligible, refresh, op);
+    };
   }
 
-  async function executeBulk(kind, eligible, refresh) {
+  async function executeBulk(kind, eligible, refresh, op = currentOp) {
     const cfg = bulkConfig(kind);
     const ids = eligible.map((i) => i.id);
-    const earned = eligible.reduce((s, i) => s + cfg.amount(i), 0);
+    const estimate = eligible.reduce((s, i) => s + cfg.amount(i), 0); // only shown if the server reports no payout
+    dialogActions = null;
 
     dialogShell(
       dialogHeader(cfg.gerund, cfg.title) +
@@ -524,17 +559,25 @@
 
     let done = 0;
     let balance;
-    let failed = 0;
+    let payout = 0; // the server's actual total_payout, summed across batches
+    let payoutSeen = false;
+    const skipped = []; // { item_id, reason } for items the backend didn't process
     try {
       // One or more bulk calls, but the balance is only touched once, after the last one — so the header
-      // never ticks up per item the way the site's own dialog did.
+      // never ticks up per item the way the site's own dialog did. The response fields match the site's
+      // own client: new_balance, sold_count, total_payout and skipped[{item_id, reason}].
       for (let i = 0; i < ids.length; i += INV_BATCH) {
         const batch = ids.slice(i, i + INV_BATCH);
         const res = await apiPost(cfg.path, { item_ids: batch, idempotency_key: crypto.randomUUID() });
-        done += res?.sold_count ?? res?.burned_count ?? res?.count ?? batch.length;
-        const b = res?.balance_pp ?? res?.balance ?? res?.pp_balance;
+        const skThis = res?.skipped ?? res?.failed ?? [];
+        if (Array.isArray(skThis)) skipped.push(...skThis);
+        done += res?.sold_count ?? res?.burned_count ?? res?.count ?? batch.length - (Array.isArray(skThis) ? skThis.length : 0);
+        const b = res?.new_balance ?? res?.balance_pp ?? res?.balance ?? res?.pp_balance;
         if (typeof b === "number") balance = b;
-        if (Array.isArray(res?.failed)) failed += res.failed.length;
+        if (typeof res?.total_payout === "number") {
+          payout += res.total_payout;
+          payoutSeen = true;
+        }
         if (i + INV_BATCH < ids.length) await new Promise((r) => setTimeout(r, 400));
       }
     } catch (e) {
@@ -543,6 +586,8 @@
       for (const key of ["inventory", "pp-balance"]) client?.invalidateQueries({ queryKey: [key] });
       getState()?.exitSelectMode();
       lastClickedId = null;
+      if (!opAlive(op)) return;
+      dialogActions = (act) => act === "close" && closeDialog();
       dialogShell(
         dialogHeader("Failed", cfg.title) +
           `<div class="px-5 py-5">
@@ -550,9 +595,10 @@
              <p class="mt-2 text-[11px] leading-4 text-white/40">Some items may already have been processed — check your inventory.</p>
              <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Close</button></div>
            </div>`
-      ).addEventListener("click", (ev) => ev.target.closest('[data-act="close"]') && closeDialog());
+      );
       return;
     }
+    if (!opAlive(op)) return;
 
     if (refresh) {
       const client = findQueryClient();
@@ -562,16 +608,26 @@
       lastClickedId = null;
     }
 
+    const received = payoutSeen ? payout : estimate; // the server's actual payout, or the estimate if it sent none
+    const skipReasons = [...new Set(skipped.map((s) => s?.reason).filter(Boolean))].slice(0, 4);
+    dialogActions = (act) => act === "close" && closeDialog();
     dialogShell(
       dialogHeader(cfg.past, cfg.title) +
         `<div class="px-5 py-5">
            <p class="text-sm text-white/80">${cfg.past} ${done} ${done === 1 ? "item" : "items"}${
-             failed ? "" : ` for <span class="font-bold tabular-nums text-white">+${fmtPP(earned)}</span><span class="ml-0.5 text-[10px] italic font-bold text-secondary">PP</span>`
+             done
+               ? ` for <span class="font-bold tabular-nums text-white">+${fmtPP(received)}</span><span class="ml-0.5 text-[10px] italic font-bold text-secondary">PP</span>`
+               : ""
            }.</p>
-           ${failed ? `<p class="mt-2 text-[11px] leading-4 text-white/45">${failed} ${failed === 1 ? "item" : "items"} couldn't be processed.</p>` : ""}
+           ${
+             skipped.length
+               ? `<p class="mt-2 text-[11px] leading-4 text-white/45">${skipped.length} ${skipped.length === 1 ? "item was" : "items were"} skipped and left in your inventory.</p>
+                  ${skipReasons.length ? `<ul class="mt-1 space-y-0.5 text-[11px] leading-4 text-white/35">${skipReasons.map((r) => `<li>· ${escapeHtml(r)}</li>`).join("")}</ul>` : ""}`
+               : ""
+           }
            <div class="mt-4 flex justify-end"><button type="button" data-act="close" class="border border-white/15 bg-white/[0.04] px-5 py-2 text-xs font-bold uppercase tracking-wider text-white/80 hover:bg-white/[0.08]">Done</button></div>
          </div>`
-    ).addEventListener("click", (e) => e.target.closest('[data-act="close"]') && closeDialog());
+    );
   }
 
   // ---------- wiring ----------

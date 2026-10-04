@@ -14,6 +14,8 @@
 
   const cache = new Map(); // steamId -> { level, elo, nickname } | null  (null: looked up, no FACEIT account)
   const asked = new Set(); // Steam ids already requested, so each is looked up only once (until a miss)
+  const pending = new Set(); // Steam ids whose lookup is in flight right now (not yet settled)
+  const subscribers = new Set(); // { ids:Set, onReady } — callers waiting on ids another caller is fetching
   const waiters = new Map(); // reqId -> resolve
   let reqId = 0;
   let retry = 0; // caps the retries below so a persistent failure can't spin
@@ -45,14 +47,35 @@
   // account, or nothing at all when the lookup failed (a cold service worker just after an extension
   // reload, or a network blip): those ids are dropped back out of "asked" and onReady is scheduled
   // again with a growing delay, so a re-draw retries them instead of leaving them stuck on "–".
+  // Notify any borrowers whose awaited ids have all settled (found, no-account, or failed), then drop them.
+  // Firing on failure too preserves the retry: the caller re-draws and re-requests the ids that missed.
+  function notifySubscribers() {
+    for (const sub of [...subscribers]) {
+      if ([...sub.ids].some((id) => pending.has(id))) continue; // still waiting on at least one
+      subscribers.delete(sub);
+      sub.onReady?.();
+    }
+  }
+
   function ensure(steamIds, onReady) {
-    const ids = [...new Set((steamIds || []).map(String).filter((id) => id && !asked.has(id)))];
-    if (!ids.length) return;
-    ids.forEach((id) => asked.add(id));
-    request(ids).then((data) => {
+    const wanted = [...new Set((steamIds || []).map(String).filter(Boolean))];
+    if (!wanted.length) return;
+    const needed = wanted.filter((id) => !cache.has(id)); // what this caller still doesn't have
+    if (!needed.length) return;
+    const fresh = needed.filter((id) => !asked.has(id)); // ids nobody has requested yet
+    // ids this caller needs that another caller is already fetching: subscribe so we're told when they land.
+    const borrowed = needed.filter((id) => !fresh.includes(id) && pending.has(id));
+    if (onReady && borrowed.length) subscribers.add({ ids: new Set(borrowed), onReady });
+    if (!fresh.length) return; // nothing new to look up; a subscription (if any) will redraw us
+    fresh.forEach((id) => {
+      asked.add(id);
+      pending.add(id);
+    });
+    request(fresh).then((data) => {
       let got = false;
       let missed = false;
-      for (const id of ids) {
+      for (const id of fresh) {
+        pending.delete(id);
         if (Object.prototype.hasOwnProperty.call(data, id)) {
           cache.set(id, data[id]); // found, or null for no FACEIT account — settled either way
           got = true;
@@ -62,6 +85,7 @@
         }
       }
       if (got) onReady?.();
+      notifySubscribers(); // other consumers waiting on any of these ids
       if (missed && retry < 6) {
         retry++;
         setTimeout(() => onReady?.(), 2000 * retry); // re-draw → ensure retries the misses

@@ -151,10 +151,15 @@
   // The site opens the inventory sorted by rarity; Price is the more useful default, so it's picked once
   // per visit. Changing it afterwards sticks until you leave the page and come back.
   let defaulted = false;
+  // The Cases category gets its own default: Price, lowest first — handy for seeing the cheapest cases to
+  // open. Applied once each time the category is entered; changing it afterwards sticks until you leave the
+  // Cases tab and come back.
+  let casesDefaulted = false;
 
   function update() {
     if (!location.pathname.startsWith("/inventory")) {
       defaulted = false;
+      casesDefaulted = false;
       return;
     }
     const found = findSelect();
@@ -165,6 +170,24 @@
       if (!(store.sortBy in SORTS)) {
         select("price");
         return; // the store change brings us straight back here
+      }
+    }
+    if (store) {
+      if (store.filterType === "cases") {
+        if (!casesDefaulted) {
+          if (store.sortBy !== "price") {
+            select("price");
+            return; // the store change brings us straight back here
+          }
+          if (store.sortDirection !== "asc") {
+            store.toggleSortDirection();
+            casesDefaulted = true;
+            return; // ditto
+          }
+          casesDefaulted = true;
+        }
+      } else {
+        casesDefaulted = false;
       }
     }
     // The store is read live; the fiber's props can lag a render behind.
